@@ -1,16 +1,16 @@
 public class App {
     final static AWS aws = AWS.getInstance();
-    String inFilePath = "";
-    String outFilePath = "";
-    int tasksPerWorker = 0;
+    static String inFilePath = "";
+    static String outFilePath = "";
+    static int tasksPerWorker = 0;
     static boolean debug = false;
     static boolean terminate = false;
     public static void main(String[] args) {// args = [inFilePath, outFilePath, tasksPerWorker, -t (terminate, optional) -D (Debug, optional)]
         if (args.length < 3) {
             throw new IllegalArgumentException("Not enough arguments. Usage: java App <inFilePath> <outFilePath> <tasksPerWorker> [-t] [-D]");
         }
-        infilePath = args[0];
-        outfilePath = args[1];
+        inFilePath = args[0];
+        outFilePath = args[1];
         tasksPerWorker = Integer.parseInt(args[2]);
         for (String arg : args) {
             if (arg.equals("-t")) {
