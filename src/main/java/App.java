@@ -2,8 +2,8 @@ public class App {
     final static AWS aws = AWS.getInstance();
     static String inFilePath = "";
     static String outFilePath = "";
-    static int manager-clients-n  = 0;
-    static int worker-files-n = 0;
+    static int managerClientsN  = 0;
+    static int workerFilesN = 0;
     static boolean debug = false;
     static boolean terminate = false;
     public static void main(String[] args) {// args = [inFilePath, outFilePath, tasksPerWorker, -t (terminate, optional) -D (Debug, optional)]
@@ -12,8 +12,8 @@ public class App {
         }
         inFilePath = args[0];
         outFilePath = args[1];
-        manager-clients-n = Integer.parseInt(args[2]);
-        worker-files-n = Integer.parseInt(args[3]);
+        managerClientsN = Integer.parseInt(args[2]);
+        workerFilesN = Integer.parseInt(args[3]);
         for (String arg : args) {
             if (arg.equals("-t")) {
                 terminate = true;
