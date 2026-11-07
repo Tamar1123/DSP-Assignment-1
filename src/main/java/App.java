@@ -1,3 +1,10 @@
+import java.util.UUID;
+
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.GetQueueUrlRequest;
+import software.amazon.awssdk.services.sqs.model.GetQueueUrlResponse;
+
 public class App {
     final static AWS aws = AWS.getInstance();
     static String inFilePath = "";
@@ -28,6 +35,13 @@ public class App {
         } catch (Exception e) {
             e.printStackTrace();
         }
+        SqsClient sqs = SqsClient.builder().region(Region.US_EAST_1).build();
+        GetQueueUrlResponse getQueueUrlResponse = sqs.getQueueUrl(
+        GetQueueUrlRequest.builder().queueName("AppToManager").build());
+        String queueUrl = getQueueUrlResponse.queueUrl();
+        String localAppID = UUID.randomUUID().toString();
+
+        sendNewTask(sqs, outFilePath, inFilePath, inFilePath);
 
     }
 
@@ -42,5 +56,9 @@ public class App {
         String ec2Script = "#!/bin/bash\n" +
                 "echo Hello World\n";
         String managerInstanceID = aws.createEC2(ec2Script, "thisIsJustAString", 1);
+    }
+
+    public static void sendNewTask(SqsClient sqs, String queueURL, String inFilePath, String localAppID) {
+
     }
 }
