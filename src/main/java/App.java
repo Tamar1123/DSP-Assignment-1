@@ -47,9 +47,9 @@ public class App {
         CreateQueueResponse createQueueResponse = sqs.createQueue(CreateQueueRequest.builder().queueName("AppToManager").build());
         String queueUrl = createQueueResponse.queueUrl();
         String localAppID = UUID.randomUUID().toString();
-
-        sendNewTask(sqs, queueUrl, inFilePath, localAppID);
-
+        S3Client s3 = S3Client.builder().region(Region.US_EAST_1).build();
+        String s3InputKey = uploadFileToS3(s3, aws.bucketName, inFilePath, localAppID);
+        sendNewTask(sqs, queueUrl, s3InputKey, localAppID);
     }
 
     //Create Buckets, Create Queues, Upload JARs to S3
@@ -69,24 +69,19 @@ public class App {
         Message msg = Message.createNewTask(inFilePath, localAppID);
         String jsonMsg = msg.toJson();
         SendMessageRequest sendMessageRequest = SendMessageRequest.builder()
-        .queueUrl(queueURL)
-        .messageBody(jsonMsg)
-        .build();
+                .queueUrl(queueURL)
+                .messageBody(jsonMsg)
+                .build();
         SendMessageResponse response = sqs.sendMessage(sendMessageRequest);
-    
-        
     }
 
     public static String uploadFileToS3(S3Client s3, String bucketName, String localFilePath, String localAppID) {
         String s3Key = "input-files/" + localAppID + "-" + Paths.get(localFilePath).getFileName().toString();
-
         PutObjectRequest putObjectRequest = PutObjectRequest.builder()
                 .bucket(bucketName)
                 .key(s3Key)
                 .build();
-
         s3.putObject(putObjectRequest, RequestBody.fromFile(Paths.get(localFilePath)));
-
         System.out.println("[INFO] File uploaded successfully to S3: " + s3Key);
         return s3Key;
     }
