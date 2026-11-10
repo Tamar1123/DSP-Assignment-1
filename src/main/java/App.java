@@ -8,6 +8,12 @@ import software.amazon.awssdk.services.sqs.model.GetQueueUrlRequest;
 import software.amazon.awssdk.services.sqs.model.GetQueueUrlResponse;
 import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
 import software.amazon.awssdk.services.sqs.model.SendMessageResponse;
+import software.amazon.awssdk.services.ec2.Ec2Client;
+import software.amazon.awssdk.services.ec2.model.Filter;
+import software.amazon.awssdk.services.ec2.model.DescribeInstancesRequest;
+import software.amazon.awssdk.services.ec2.model.DescribeInstancesResponse;
+import software.amazon.awssdk.services.ec2.model.Instance;
+import software.amazon.awssdk.services.ec2.model.Reservation;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -44,12 +50,18 @@ public class App {
             e.printStackTrace();
         }
         SqsClient sqs = SqsClient.builder().region(Region.US_EAST_1).build();
-        CreateQueueResponse createQueueResponse = sqs.createQueue(CreateQueueRequest.builder().queueName("AppToManager").build());
-        String queueUrl = createQueueResponse.queueUrl();
-        String localAppID = UUID.randomUUID().toString();
         S3Client s3 = S3Client.builder().region(Region.US_EAST_1).build();
+        String localAppID = UUID.randomUUID().toString();
+        CreateQueueResponse createQueueResponse = sqs.createQueue(CreateQueueRequest.builder().queueName("AppToManager").build());
+        String appToManagerQueueUrl = createQueueResponse.queueUrl();
+        String responseQueueName = "ManagerToApp-" + localAppID;
+        CreateQueueResponse managerToApp = sqs.createQueue(
+                CreateQueueRequest.builder().queueName(responseQueueName).build()
+        );
+        String managerToAppQueueUrl = managerToApp.queueUrl();
         String s3InputKey = uploadFileToS3(s3, aws.bucketName, inFilePath, localAppID);
-        sendNewTask(sqs, queueUrl, s3InputKey, localAppID);
+        sendNewTask(sqs, appToManagerQueueUrl, s3InputKey, localAppID);
+        //done_task logic
     }
 
     //Create Buckets, Create Queues, Upload JARs to S3
@@ -60,9 +72,40 @@ public class App {
     }
 
     private static void createEC2() {
+        Ec2Client ec2 = Ec2Client.builder().region(Region.US_EAST_1).build();
+        if (isManagerRunning(ec2)) {
+            System.out.println("Manager is already running. Skipping EC2 creation.");
+            return;
+        }
+        System.out.println("No active Manager found. Launching a new Manager EC2 instance...");
         String ec2Script = "#!/bin/bash\n" +
                 "echo Hello World\n";
-        String managerInstanceID = aws.createEC2(ec2Script, "thisIsJustAString", 1);
+        String managerInstanceID = aws.createEC2(ec2Script, "Manager", 1);
+    }
+
+    public static boolean isManagerRunning(Ec2Client ec2) {
+        Filter stateFilter = Filter.builder()
+                .name("instance-state-name")
+                .values("running", "pending")
+                .build();
+        Filter tagFilter = Filter.builder()
+                .name("tag:Name")
+                .values("Manager") 
+                .build();
+        DescribeInstancesRequest request = DescribeInstancesRequest.builder()
+                .filters(stateFilter, tagFilter)
+                .build();
+        DescribeInstancesResponse response = ec2.describeInstances(request);
+        for (Reservation reservation : response.reservations()) {
+            for (Instance instance : reservation.instances()) {
+                if (debug) {
+                    System.out.println("[DEBUG] Found active Manager Instance ID: " + instance.instanceId());
+                }
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public static void sendNewTask(SqsClient sqs, String queueURL, String inFilePath, String localAppID) {
@@ -82,7 +125,7 @@ public class App {
                 .key(s3Key)
                 .build();
         s3.putObject(putObjectRequest, RequestBody.fromFile(Paths.get(localFilePath)));
-        System.out.println("[INFO] File uploaded successfully to S3: " + s3Key);
+        System.out.println("File uploaded successfully to S3: " + s3Key);
         return s3Key;
     }
 }
