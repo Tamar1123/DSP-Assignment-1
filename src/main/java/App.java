@@ -2,8 +2,16 @@ import java.util.UUID;
 
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.CreateQueueRequest;
+import software.amazon.awssdk.services.sqs.model.CreateQueueResponse;
 import software.amazon.awssdk.services.sqs.model.GetQueueUrlRequest;
 import software.amazon.awssdk.services.sqs.model.GetQueueUrlResponse;
+import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
+import software.amazon.awssdk.services.sqs.model.SendMessageResponse;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.core.sync.RequestBody;
+import java.nio.file.Paths;
 
 public class App {
     final static AWS aws = AWS.getInstance();
@@ -36,12 +44,11 @@ public class App {
             e.printStackTrace();
         }
         SqsClient sqs = SqsClient.builder().region(Region.US_EAST_1).build();
-        GetQueueUrlResponse getQueueUrlResponse = sqs.getQueueUrl(
-        GetQueueUrlRequest.builder().queueName("AppToManager").build());
-        String queueUrl = getQueueUrlResponse.queueUrl();
+        CreateQueueResponse createQueueResponse = sqs.createQueue(CreateQueueRequest.builder().queueName("AppToManager").build());
+        String queueUrl = createQueueResponse.queueUrl();
         String localAppID = UUID.randomUUID().toString();
 
-        sendNewTask(sqs, outFilePath, inFilePath, inFilePath);
+        sendNewTask(sqs, queueUrl, inFilePath, localAppID);
 
     }
 
@@ -59,6 +66,28 @@ public class App {
     }
 
     public static void sendNewTask(SqsClient sqs, String queueURL, String inFilePath, String localAppID) {
+        Message msg = Message.createNewTask(inFilePath, localAppID);
+        String jsonMsg = msg.toJson();
+        SendMessageRequest sendMessageRequest = SendMessageRequest.builder()
+        .queueUrl(queueURL)
+        .messageBody(jsonMsg)
+        .build();
+        SendMessageResponse response = sqs.sendMessage(sendMessageRequest);
+    
+        
+    }
 
+    public static String uploadFileToS3(S3Client s3, String bucketName, String localFilePath, String localAppID) {
+        String s3Key = "input-files/" + localAppID + "-" + Paths.get(localFilePath).getFileName().toString();
+
+        PutObjectRequest putObjectRequest = PutObjectRequest.builder()
+                .bucket(bucketName)
+                .key(s3Key)
+                .build();
+
+        s3.putObject(putObjectRequest, RequestBody.fromFile(Paths.get(localFilePath)));
+
+        System.out.println("[INFO] File uploaded successfully to S3: " + s3Key);
+        return s3Key;
     }
 }
