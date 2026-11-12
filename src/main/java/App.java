@@ -1,11 +1,15 @@
+import java.util.List;
 import java.util.UUID;
 
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.CreateQueueRequest;
 import software.amazon.awssdk.services.sqs.model.CreateQueueResponse;
+import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
+import software.amazon.awssdk.services.sqs.model.DeleteQueueRequest;
 import software.amazon.awssdk.services.sqs.model.GetQueueUrlRequest;
 import software.amazon.awssdk.services.sqs.model.GetQueueUrlResponse;
+import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
 import software.amazon.awssdk.services.sqs.model.SendMessageResponse;
 import software.amazon.awssdk.services.ec2.Ec2Client;
@@ -23,13 +27,16 @@ public class App {
     final static AWS aws = AWS.getInstance();
     static String inFilePath = "";
     static String outFilePath = "";
-    static int managerClientsN  = 0;
+    static int managerClientsN = 0;
     static int workerFilesN = 0;
     static boolean debug = false;
     static boolean terminate = false;
-    public static void main(String[] args) {// args = [inFilePath, outFilePath, tasksPerWorker, -t (terminate, optional) -D (Debug, optional)]
+
+    public static void main(String[] args) {// args = [inFilePath, outFilePath, tasksPerWorker, -t (terminate, optional)
+                                            // -D (Debug, optional)]
         if (args.length < 4) {
-            throw new IllegalArgumentException("Not enough arguments. Usage: java App <inFilePath> <outFilePath> <tasksPerWorker> [-t] [-D]");
+            throw new IllegalArgumentException(
+                    "Not enough arguments. Usage: java App <inFilePath> <outFilePath> <tasksPerWorker> [-t] [-D]");
         }
         inFilePath = args[0];
         outFilePath = args[1];
@@ -52,19 +59,47 @@ public class App {
         SqsClient sqs = SqsClient.builder().region(Region.US_EAST_1).build();
         S3Client s3 = S3Client.builder().region(Region.US_EAST_1).build();
         String localAppID = UUID.randomUUID().toString();
-        CreateQueueResponse createQueueResponse = sqs.createQueue(CreateQueueRequest.builder().queueName("AppToManager").build());
+        CreateQueueResponse createQueueResponse = sqs
+                .createQueue(CreateQueueRequest.builder().queueName("AppToManager").build());
         String appToManagerQueueUrl = createQueueResponse.queueUrl();
         String responseQueueName = "ManagerToApp-" + localAppID;
         CreateQueueResponse managerToApp = sqs.createQueue(
-                CreateQueueRequest.builder().queueName(responseQueueName).build()
-        );
+                CreateQueueRequest.builder().queueName(responseQueueName).build());
         String managerToAppQueueUrl = managerToApp.queueUrl();
         String s3InputKey = uploadFileToS3(s3, aws.bucketName, inFilePath, localAppID);
         sendNewTask(sqs, appToManagerQueueUrl, s3InputKey, localAppID);
-        //done_task logic
+        // done_task logic
+        String result = waitForResult(sqs, managerToAppQueueUrl);
     }
 
-    //Create Buckets, Create Queues, Upload JARs to S3
+    public static String waitForResult(SqsClient sqs, String managerToAppQueueUrl) {
+        while (true) {
+            ReceiveMessageRequest receiveRequest = ReceiveMessageRequest.builder()
+                    .queueUrl(managerToAppQueueUrl)
+                    .waitTimeSeconds(20)
+                    .maxNumberOfMessages(1)
+                    .build();
+            List<software.amazon.awssdk.services.sqs.model.Message> messages = sqs.receiveMessage(receiveRequest)
+                    .messages();
+            for (software.amazon.awssdk.services.sqs.model.Message sqsMsg : messages) {
+                String body = sqsMsg.body();
+                Message message = Message.fromJson(body);
+                if (message.getType() == Message.MessageType.DONE_TASK) {
+                    DeleteMessageRequest deleteMessageRequest = DeleteMessageRequest.builder()
+                            .queueUrl(managerToAppQueueUrl)
+                            .receiptHandle(sqsMsg.receiptHandle())
+                            .build();
+                    sqs.deleteMessage(deleteMessageRequest);
+                    sqs.deleteQueue(DeleteQueueRequest.builder()
+                            .queueUrl(managerToAppQueueUrl)
+                            .build());
+                    return message.getOutputFileLocation();
+                }
+            }
+        }
+    }
+
+    // Create Buckets, Create Queues, Upload JARs to S3
     private static void setup() {
         if (debug)
             System.out.println("[DEBUG] Create bucket if not exist.");
@@ -90,7 +125,7 @@ public class App {
                 .build();
         Filter tagFilter = Filter.builder()
                 .name("tag:Name")
-                .values("Manager") 
+                .values("Manager")
                 .build();
         DescribeInstancesRequest request = DescribeInstancesRequest.builder()
                 .filters(stateFilter, tagFilter)
