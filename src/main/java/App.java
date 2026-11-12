@@ -19,8 +19,11 @@ import software.amazon.awssdk.services.ec2.model.DescribeInstancesResponse;
 import software.amazon.awssdk.services.ec2.model.Instance;
 import software.amazon.awssdk.services.ec2.model.Reservation;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.core.sync.ResponseTransformer;
+
 import java.nio.file.Paths;
 
 public class App {
@@ -69,7 +72,17 @@ public class App {
         String s3InputKey = uploadFileToS3(s3, aws.bucketName, inFilePath, localAppID);
         sendNewTask(sqs, appToManagerQueueUrl, s3InputKey, localAppID);
         // done_task logic
-        String result = waitForResult(sqs, managerToAppQueueUrl);
+        String resultS3Key = waitForResult(sqs, managerToAppQueueUrl);
+        downloadFileFromS3(s3, aws.bucketName, resultS3Key, outFilePath);
+    }
+
+    public static void downloadFileFromS3(S3Client s3, String bucketName, String s3Key, String localOutputPath) {
+        GetObjectRequest getObjectRequest = GetObjectRequest.builder()
+                .bucket(bucketName)
+                .key(s3Key) 
+                .build();
+        s3.getObject(getObjectRequest, ResponseTransformer.toFile(Paths.get(localOutputPath)));
+        System.out.println("[INFO] Summary file downloaded successfully to: " + localOutputPath);
     }
 
     public static String waitForResult(SqsClient sqs, String managerToAppQueueUrl) {
