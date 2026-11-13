@@ -74,6 +74,24 @@ public class App {
         // done_task logic
         String resultS3Key = waitForResult(sqs, managerToAppQueueUrl);
         downloadFileFromS3(s3, aws.bucketName, resultS3Key, outFilePath);
+        if (terminate) {
+            if (debug) {
+                System.out.println("[DEBUG] Terminate flag is set. Sending TERMINATE message to Manager...");
+            }
+            sendTerminate(sqs, appToManagerQueueUrl, localAppID);
+        }
+        sqs.close();
+        s3.close();
+        System.out.println("[INFO] LocalApp finished successfully.");
+    }
+
+    public static void sendTerminate(SqsClient sqs, String queueURL, String localAppID) {
+        Message msg = Message.createTerminate(localAppID);
+        SendMessageRequest sendMessageRequest = SendMessageRequest.builder()
+            .queueUrl(queueURL)
+            .messageBody(msg.toJson())
+            .build();
+        sqs.sendMessage(sendMessageRequest);
     }
 
     public static void downloadFileFromS3(S3Client s3, String bucketName, String s3Key, String localOutputPath) {
