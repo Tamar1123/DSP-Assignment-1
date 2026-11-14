@@ -12,9 +12,9 @@ import java.util.concurrent.TimeUnit;
  * without any network access.
  */
 public class InMemoryQueue implements Queue {
-    static final int CAPACITY = 1000;
+    static final int QUEUE_CAPACITY = 1000;
 
-    private final BlockingQueue<Received> queue = new ArrayBlockingQueue<Received>(CAPACITY);
+    private final BlockingQueue<Received> queue = new ArrayBlockingQueue<Received>(QUEUE_CAPACITY);
 
     public InMemoryQueue() {
     }
@@ -58,7 +58,13 @@ public class InMemoryQueue implements Queue {
 
     @Override
     public void release(Received received) {
-        // Dev loses ordering on release (offer appends to the tail); acceptable in-memory.
-        queue.offer(received);
+        // Dev loses ordering on release (put appends to the tail); acceptable in-memory.
+        try {
+            // Block rather than offer: at capacity an offer would silently drop the message.
+            queue.put(received);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted while releasing to in-memory queue", e);
+        }
     }
 }

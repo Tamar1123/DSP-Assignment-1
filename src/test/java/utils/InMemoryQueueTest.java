@@ -46,6 +46,44 @@ public class InMemoryQueueTest {
     }
 
     @Test
+    public void releaseAtCapacityDoesNotDropTheMessage() throws InterruptedException {
+        final Queue q = new InMemoryQueue();
+        for (int i = 0; i < InMemoryQueue.QUEUE_CAPACITY; i++) {
+            q.send(Message.createNewTask("url-" + i, "app-1"));
+        }
+        final Received released = q.receive(1, 0).get(0);
+        // Refill the freed slot so the queue is genuinely full when release runs.
+        q.send(Message.createNewTask("filler", "app-1"));
+
+        Thread releaser = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                q.release(released);
+            }
+        });
+        releaser.start();
+
+        // A blocking put cannot finish while the queue is full.
+        long deadline = System.currentTimeMillis() + 5000;
+        while (releaser.getState() != Thread.State.WAITING && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
+
+        // Free a slot so the release can complete instead of dropping the message.
+        assertEquals(1, q.receive(1, 0).size());
+        releaser.join(5000);
+        assertFalse(releaser.isAlive(), "release must not block once a slot is free");
+
+        boolean found = false;
+        for (Received r : q.receive(InMemoryQueue.QUEUE_CAPACITY, 0)) {
+            if (r.getMessage().getInputFileLocation().equals(released.getMessage().getInputFileLocation())) {
+                found = true;
+            }
+        }
+        assertTrue(found, "the released message must stay in the queue");
+    }
+
+    @Test
     public void receiveReturnsAtMostMax() {
         Queue q = new InMemoryQueue();
         q.send(Message.createNewTask("a", "app-1"));
