@@ -1,21 +1,22 @@
+package client;
 public class App {
-    final static AWS aws = AWS.getInstance();
-    static String inFilePath = "";
-    static String outFilePath = "";
+    final static utils.AWS aws = utils.AWS.getInstance();
+    static String inputFileName = "";
+    static String outputFileName = "";
     static int managerClientsN  = 0;
     static int workerFilesN = 0;
     static boolean debug = false;
     static boolean terminate = false;
-    public static void main(String[] args) {// args = [inFilePath, outFilePath, tasksPerWorker, -t (terminate, optional) -D (Debug, optional)]
+    public static void main(String[] args) {// args = [inputFileName, outputFileName, manager-clients-n, worker-files-n, terminate (optional), -D (Debug, optional)]
         if (args.length < 4) {
-            throw new IllegalArgumentException("Not enough arguments. Usage: java App <inFilePath> <outFilePath> <tasksPerWorker> [-t] [-D]");
+            throw new IllegalArgumentException("Not enough arguments. Usage: java -jar <jar> inputFileName outputFileName manager-clients-n worker-files-n [terminate]");
         }
-        inFilePath = args[0];
-        outFilePath = args[1];
+        inputFileName = args[0];
+        outputFileName = args[1];
         managerClientsN = Integer.parseInt(args[2]);
         workerFilesN = Integer.parseInt(args[3]);
         for (String arg : args) {
-            if (arg.equals("-t")) {
+            if (arg.equals("terminate")) {
                 terminate = true;
             }
             if (arg.equals("-D")) {
