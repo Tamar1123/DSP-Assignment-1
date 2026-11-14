@@ -34,6 +34,9 @@ bin/
 ### VS Code ###
 .vscode/
 
+### Docs ###
+docs/
+
 ### OS files ###
 .DS_Store
 Thumbs.db
