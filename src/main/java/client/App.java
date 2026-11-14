@@ -5,7 +5,7 @@ public class App {
     static String outputFileName = "";
     static int managerClientsN  = 0;
     static int workerFilesN = 0;
-    static boolean debug = false;
+    public static boolean debug = false;
     static boolean terminate = false;
     public static void main(String[] args) {// args = [inputFileName, outputFileName, manager-clients-n, worker-files-n, terminate (optional), -D (Debug, optional)]
         if (args.length < 4) {
