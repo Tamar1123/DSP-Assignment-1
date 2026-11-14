@@ -52,6 +52,15 @@ public class QueuesTest {
     }
 
     @Test
+    public void createMakesTheQueueAvailable() {
+        Queues.reset();
+        Queues.setDev(true);
+        Queues.create("q-create");
+        assertNotNull(Queues.get("q-create"));
+        assertTrue(Queues.get("q-create") instanceof InMemoryQueue);
+    }
+
+    @Test
     public void awsModeReturnsSqsQueuesWithoutContactingAws() {
         Queues.reset();
         assertTrue(Queues.get("q3", Boolean.FALSE) instanceof SqsQueue);

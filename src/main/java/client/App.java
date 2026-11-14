@@ -57,6 +57,11 @@ public class App {
      */
     static String run() {
         String localAppID = UUID.randomUUID().toString();
+        // Create the inbox before sending the request: in SQS mode a lazily constructed
+        // SqsQueue exists only in this JVM, so the manager could otherwise answer into a
+        // queue that was never created.
+        Queues.create(Queues.clientQueueName(localAppID));
+        Queues.create(Queues.managerQueueName());
         Queue inbox = Queues.get(Queues.clientQueueName(localAppID));
         Queue managerQueue = Queues.get(Queues.managerQueueName());
 

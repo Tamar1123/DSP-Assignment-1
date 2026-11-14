@@ -65,6 +65,23 @@ public final class Queues {
         return QUEUES.computeIfAbsent(queueName, n -> devFlag ? new InMemoryQueue() : new SqsQueue(n));
     }
 
+    /**
+     * Creates the named queue now instead of waiting for the first send/receive.
+     *
+     * <p>In dev mode the in-memory queue only lives in this JVM, so this is just
+     * {@link #get(String)}. In SQS mode {@link SqsQueue} resolves its URL lazily, so a caller
+     * that must guarantee the queue exists before another process starts using it (for example
+     * a client creating its reply queue before sending a request) has to ask for it here.
+     * SQS {@code createQueue} is idempotent, so repeated calls are safe.</p>
+     */
+    public static void create(String queueName) {
+        if (isDev()) {
+            get(queueName);
+        } else {
+            AWS.getInstance().createQueue(queueName);
+        }
+    }
+
     public static void setDev(boolean dev) {
         Queues.dev = dev;
     }
