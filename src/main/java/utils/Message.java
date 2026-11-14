@@ -16,6 +16,7 @@ public class Message {
     private String identifiedText;
     private String outputFileLocation;
     private String localAppID;
+    private String managerID;
     private boolean isError;
 
     public Message() {}
@@ -31,11 +32,12 @@ public class Message {
     }
 
     
-    public static Message createNewImageTask(String imageURL, String localAppID) {
+    public static Message createNewImageTask(String imageURL, String localAppID, String managerID) {
         Message msg = new Message();
         msg.type = MessageType.NEW_IMAGE_TASK;
         msg.imageURL = imageURL;
         msg.localAppID = localAppID;
+        msg.managerID = managerID;
         return msg;
     }
 
@@ -87,6 +89,9 @@ public class Message {
 
     public String getLocalAppID() { return localAppID; }
     public void setLocalAppID(String localAppID) { this.localAppID = localAppID; }
+
+    public String getManagerID() { return managerID; }
+    public void setManagerID(String managerID) { this.managerID = managerID; }
 
     public String getInputFileLocation() { return inputFileLocation; }
     public void setInputFileLocation(String inputFileLocation) { this.inputFileLocation = inputFileLocation; }
