@@ -17,9 +17,6 @@ public class App {
     public static boolean debug = false;
     static boolean terminate = false;
 
-    /** Bounded wait for a reply from the manager; overridable by tests. */
-    public static int WAIT_TIMEOUT_SECONDS = 60;
-
     public static void main(String[] args) {// args = [inputFileName, outputFileName, manager-clients-n, worker-files-n, terminate (optional), -D (Debug, optional)]
         if (args.length < 4) {
             throw new IllegalArgumentException("Not enough arguments. Usage: java -jar <jar> inputFileName outputFileName manager-clients-n worker-files-n [terminate]");
@@ -46,14 +43,13 @@ public class App {
     }
 
     /**
-     * Sends the new task to the manager and waits (bounded) for this client's summary.
+     * Sends the new task to the manager and waits for this client's summary.
      *
      * <p>A per-client reply queue is created before the request is sent, so the manager can
      * never answer before the client is listening. The inbox is deliberately left in place
      * for inspection after the run; it is not reset or deleted here.</p>
      *
      * @return the S3 location of the summary file
-     * @throws IllegalStateException if no answer arrives within {@link #WAIT_TIMEOUT_SECONDS}
      */
     static String run() {
         String localAppID = UUID.randomUUID().toString();
@@ -70,24 +66,21 @@ public class App {
             System.out.println("[DEBUG] Sending NEW_TASK for " + inputFileName + " as " + localAppID);
         managerQueue.send(Message.createNewTask(inputFileName, localAppID));
 
-        Message done = await(inbox, Message.MessageType.DONE_TASK,
-                "no DONE_TASK within " + WAIT_TIMEOUT_SECONDS + "s");
+        Message done = await(inbox, Message.MessageType.DONE_TASK);
 
         if (terminate) {
             if (debug)
                 System.out.println("[DEBUG] Sending TERMINATE for " + localAppID);
             managerQueue.send(Message.createTerminate(localAppID));
-            await(inbox, Message.MessageType.TERMINATE,
-                    "no TERMINATE within " + WAIT_TIMEOUT_SECONDS + "s");
+            await(inbox, Message.MessageType.TERMINATE);
         }
 
         return done.getOutputFileLocation();
     }
 
-    /** Polls {@code inbox} until a message of {@code expected} arrives or the deadline passes. */
-    private static Message await(Queue inbox, Message.MessageType expected, String timeoutMessage) {
-        long deadline = System.currentTimeMillis() + WAIT_TIMEOUT_SECONDS * 1000L;
-        while (System.currentTimeMillis() < deadline) {
+    /** Polls {@code inbox} until a message of {@code expected} arrives. */
+    private static Message await(Queue inbox, Message.MessageType expected) {
+        while (true) {
             List<Received> received = inbox.receive(1, 1);
             for (Received r : received) {
                 if (r.getMessage().getType() == expected) {
@@ -98,7 +91,6 @@ public class App {
                 inbox.release(r);
             }
         }
-        throw new IllegalStateException(timeoutMessage);
     }
 
     //Create Buckets, Create Queues, Upload JARs to S3

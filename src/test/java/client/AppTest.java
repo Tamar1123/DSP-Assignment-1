@@ -5,7 +5,6 @@ import org.junit.jupiter.api.Test;
 import utils.*;
 
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
@@ -20,7 +19,6 @@ public class AppTest {
         Queues.setDev(true);
         App.debug = false;
         App.terminate = false;
-        App.WAIT_TIMEOUT_SECONDS = 60;
         App.inputFileName = "/tmp/in.txt";
         App.outputFileName = "/tmp/out.html";
         App.managerClientsN = 1;
@@ -81,54 +79,6 @@ public class AppTest {
             assertEquals("/tmp/summary.txt", summary.get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS));
         } finally {
             cancelIfRunning(summary);
-        }
-    }
-
-    @Test
-    public void terminateAckTimeoutIsReportedNotHung() throws Exception {
-        App.terminate = true;
-        App.WAIT_TIMEOUT_SECONDS = 1;
-        CompletableFuture<String> summary = CompletableFuture.supplyAsync(startRun());
-        try {
-            Received task = Queues.get(Queues.managerQueueName()).receive(1, 5).get(0);
-            String localAppID = task.getMessage().getLocalAppID();
-            Queues.get(Queues.clientQueueName(localAppID))
-                    .send(Message.createDoneTask("/tmp/summary.txt", localAppID));
-
-            Received term = Queues.get(Queues.managerQueueName()).receive(1, 5).get(0);
-            assertEquals(Message.MessageType.TERMINATE, term.getMessage().getType());
-
-            // Deliberately no ack: the client must report the timeout, not hang.
-            try {
-                summary.get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-                fail("expected the run to time out waiting for the TERMINATE ack");
-            } catch (ExecutionException e) {
-                Throwable cause = e.getCause();
-                while (cause instanceof java.util.concurrent.CompletionException
-                        && cause.getCause() != null) {
-                    cause = cause.getCause();
-                }
-                assertTrue(cause instanceof IllegalStateException,
-                        "expected an IllegalStateException cause, got " + cause);
-            }
-        } finally {
-            cancelIfRunning(summary);
-            App.WAIT_TIMEOUT_SECONDS = 60;
-        }
-    }
-
-    @Test
-    public void timeoutIsReportedNotHung() {
-        App.WAIT_TIMEOUT_SECONDS = 1;
-        try {
-            assertThrows(IllegalStateException.class, new org.junit.jupiter.api.function.Executable() {
-                @Override
-                public void execute() {
-                    App.run();
-                }
-            });
-        } finally {
-            App.WAIT_TIMEOUT_SECONDS = 60;
         }
     }
 

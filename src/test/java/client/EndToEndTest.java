@@ -28,8 +28,6 @@ public class EndToEndTest {
         Queues.setDev(true);
         App.debug = false;
         App.terminate = false;
-        // A prior test may have lowered this; the end-to-end run needs the real budget.
-        App.WAIT_TIMEOUT_SECONDS = 60;
     }
 
     @Test
