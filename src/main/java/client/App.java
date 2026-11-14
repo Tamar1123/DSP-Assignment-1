@@ -1,4 +1,13 @@
 package client;
+
+import utils.Message;
+import utils.Queue;
+import utils.Queues;
+import utils.Received;
+
+import java.util.List;
+import java.util.UUID;
+
 public class App {
     final static utils.AWS aws = utils.AWS.getInstance();
     static String inputFileName = "";
@@ -7,6 +16,10 @@ public class App {
     static int workerFilesN = 0;
     public static boolean debug = false;
     static boolean terminate = false;
+
+    /** Bounded wait for a reply from the manager; overridable by tests. */
+    public static int WAIT_TIMEOUT_SECONDS = 60;
+
     public static void main(String[] args) {// args = [inputFileName, outputFileName, manager-clients-n, worker-files-n, terminate (optional), -D (Debug, optional)]
         if (args.length < 4) {
             throw new IllegalArgumentException("Not enough arguments. Usage: java -jar <jar> inputFileName outputFileName manager-clients-n worker-files-n [terminate]");
@@ -24,12 +37,63 @@ public class App {
             }
         }
         try {
-            setup();
-            createEC2();
+            String summaryLocation = run();
+            System.out.println(summaryLocation);
         } catch (Exception e) {
             e.printStackTrace();
+            System.exit(1);
+        }
+    }
+
+    /**
+     * Sends the new task to the manager and waits (bounded) for this client's summary.
+     *
+     * <p>A per-client reply queue is created before the request is sent, so the manager can
+     * never answer before the client is listening. The inbox is deliberately left in place
+     * for inspection after the run; it is not reset or deleted here.</p>
+     *
+     * @return the S3 location of the summary file
+     * @throws IllegalStateException if no answer arrives within {@link #WAIT_TIMEOUT_SECONDS}
+     */
+    static String run() {
+        String localAppID = UUID.randomUUID().toString();
+        Queue inbox = Queues.get(Queues.clientQueueName(localAppID));
+        Queue managerQueue = Queues.get(Queues.managerQueueName());
+
+        // TODO: upload inputFileName to S3 and send the S3 location instead.
+        if (debug)
+            System.out.println("[DEBUG] Sending NEW_TASK for " + inputFileName + " as " + localAppID);
+        managerQueue.send(Message.createNewTask(inputFileName, localAppID));
+
+        Message done = await(inbox, Message.MessageType.DONE_TASK,
+                "no DONE_TASK within " + WAIT_TIMEOUT_SECONDS + "s");
+
+        if (terminate) {
+            if (debug)
+                System.out.println("[DEBUG] Sending TERMINATE for " + localAppID);
+            managerQueue.send(Message.createTerminate(localAppID));
+            await(inbox, Message.MessageType.TERMINATE,
+                    "no TERMINATE within " + WAIT_TIMEOUT_SECONDS + "s");
         }
 
+        return done.getOutputFileLocation();
+    }
+
+    /** Polls {@code inbox} until a message of {@code expected} arrives or the deadline passes. */
+    private static Message await(Queue inbox, Message.MessageType expected, String timeoutMessage) {
+        long deadline = System.currentTimeMillis() + WAIT_TIMEOUT_SECONDS * 1000L;
+        while (System.currentTimeMillis() < deadline) {
+            List<Received> received = inbox.receive(1, 1);
+            for (Received r : received) {
+                if (r.getMessage().getType() == expected) {
+                    inbox.delete(r);
+                    return r.getMessage();
+                }
+                // Unexpected traffic on this queue: put it back for the next poll.
+                inbox.release(r);
+            }
+        }
+        throw new IllegalStateException(timeoutMessage);
     }
 
     //Create Buckets, Create Queues, Upload JARs to S3
