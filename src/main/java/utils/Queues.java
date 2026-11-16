@@ -5,9 +5,9 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Owns the queue names used across the system and chooses the transport implementation.
  *
- * <p>Every component asks for a named queue through {@link #get(String)} and never constructs
+ * Every component asks for a named queue through {@link #get(String)} and never constructs
  * a queue itself. In dev mode the queues live in this JVM ({@link InMemoryQueue}); in a real
- * run they are real SQS queues ({@link SqsQueue}).</p>
+ * run they are real SQS queues ({@link SqsQueue}).
  */
 public final class Queues {
     public static final String MANAGER_QUEUE = "manager_queue";
@@ -68,11 +68,11 @@ public final class Queues {
     /**
      * Creates the named queue now instead of waiting for the first send/receive.
      *
-     * <p>In dev mode the in-memory queue only lives in this JVM, so this is just
+     * In dev mode the in-memory queue only lives in this JVM, so this is just
      * {@link #get(String)}. In SQS mode {@link SqsQueue} resolves its URL lazily, so a caller
      * that must guarantee the queue exists before another process starts using it (for example
      * a client creating its reply queue before sending a request) has to ask for it here.
-     * SQS {@code createQueue} is idempotent, so repeated calls are safe.</p>
+     * SQS {@code createQueue} is idempotent, so repeated calls are safe.
      */
     public static void create(String queueName) {
         if (isDev()) {

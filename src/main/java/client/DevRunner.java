@@ -7,13 +7,13 @@ import utils.Queues;
 /**
  * Dev entry point: one manager and two workers in this JVM, then the real client flow.
  *
- * <p><b>This is not the graded entry point.</b> The graded run uses {@code client.App}
+ * <b>This is not the graded entry point.</b> The graded run uses {@code client.App}
  * (the jar's {@code Main-Class}) with {@link Queues#DEV} set to {@code false}, so the manager
  * and the workers run as separate processes on EC2 and talk over SQS. This class exists only
  * to exercise the same component code against the in-memory transport, with the queue wiring
- * being the only difference.</p>
+ * being the only difference.
  *
- * <p>Usage: {@code java -cp <classes+deps> client.DevRunner input.txt output.html 1 1 [terminate]}</p>
+ * Usage: {@code java -cp <classes+deps> client.DevRunner input.txt output.html 1 1 [terminate]}
  */
 public final class DevRunner {
     private static final int WORKERS = 2;

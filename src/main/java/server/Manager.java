@@ -22,9 +22,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * The manager: routes client work to the shared worker queue and answers each client once
  * all of its images have been OCRed.
  *
- * <p>The manager never OCRs and never downloads images. It owns one request queue (shared by
+ * The manager never OCRs and never downloads images. It owns one request queue (shared by
  * all clients), one shared worker queue, and one {@code done_ocr_<managerID>} queue that its
- * workers report to.</p>
+ * workers report to.
  */
 public class Manager implements Runnable {
     private static final int RECEIVE_MAX = 10;
@@ -202,7 +202,7 @@ public class Manager implements Runnable {
      * In a real deployment the manager owns {@code done_ocr_<managerID>}; drop it on the way
      * out. In dev the registry is reset by the tests, so there is nothing to delete.
      *
-     * <p>Not exercisable offline: this branch only runs with the SQS transport.</p>
+     * Not exercisable offline: this branch only runs with the SQS transport.
      */
     private void deleteDoneOcrQueueIfAws() {
         if (Queues.isDev()) {

@@ -45,9 +45,9 @@ public class App {
     /**
      * Sends the new task to the manager and waits for this client's summary.
      *
-     * <p>A per-client reply queue is created before the request is sent, so the manager can
+     * A per-client reply queue is created before the request is sent, so the manager can
      * never answer before the client is listening. The inbox is deliberately left in place
-     * for inspection after the run; it is not reset or deleted here.</p>
+     * for inspection after the run; it is not reset or deleted here.
      *
      * @return the S3 location of the summary file
      */

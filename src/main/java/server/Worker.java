@@ -12,9 +12,9 @@ import java.io.File;
  * A worker: takes one image task at a time from the shared worker queue, OCRs the image and
  * reports the text to the manager that issued the task.
  *
- * <p>Workers share one queue, so any worker may take any task. A message is deleted only
+ * Workers share one queue, so any worker may take any task. A message is deleted only
  * after a reply has been attempted; a failed OCR still produces an error reply, and a failed
- * reply leaves the worker alive for the next task.</p>
+ * reply leaves the worker alive for the next task.
  */
 public class Worker implements Runnable {
     private static final int RECEIVE_MAX = 1;

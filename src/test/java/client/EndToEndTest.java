@@ -15,9 +15,9 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * One manager and two workers in one JVM, serving two clients' worth of work.
  *
- * <p>Uses the dev (in-memory) transport, so nothing here touches AWS. The clients run one
+ * Uses the dev (in-memory) transport, so nothing here touches AWS. The clients run one
  * after the other because {@link App} keeps the current input file in a static field; each
- * run still gets its own {@code localAppID} and therefore its own reply queue.</p>
+ * run still gets its own {@code localAppID} and therefore its own reply queue.
  */
 public class EndToEndTest {
     private static final long JOIN_TIMEOUT_MILLIS = 5000;

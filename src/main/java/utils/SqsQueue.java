@@ -12,8 +12,8 @@ import java.util.List;
 /**
  * {@link Queue} backed by a real AWS SQS queue.
  *
- * <p>The queue URL is resolved lazily on first use, so constructing an instance (for example,
- * from {@code Queues.get(name, false)}) never contacts AWS and needs no credentials.</p>
+ * The queue URL is resolved lazily on first use, so constructing an instance (for example,
+ * from {@code Queues.get(name, false)}) never contacts AWS and needs no credentials.
  */
 public class SqsQueue implements Queue {
     private final String queueName;
