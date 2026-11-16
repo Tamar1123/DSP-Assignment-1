@@ -8,6 +8,7 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.*;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.CreateQueueRequest;
+import software.amazon.awssdk.services.sqs.model.DeleteQueueRequest;
 
 import java.util.Base64;
 
@@ -96,10 +97,28 @@ public class AWS {
         return instanceId;
     }
 
-    public void createSqsQueue(String queueName) {
+    // SQS
+    public SqsClient getSqs() {
+        return sqs;
+    }
+
+    /**
+     * Creates the queue if it does not exist yet (SQS createQueue is idempotent) and
+     * returns its URL.
+     */
+    public String createQueue(String queueName) {
         CreateQueueRequest createQueueRequest = CreateQueueRequest.builder()
                 .queueName(queueName)
                 .build();
-        sqs.createQueue(createQueueRequest);
+        return sqs.createQueue(createQueueRequest).queueUrl();
+    }
+
+    /** Deletes a queue, ignoring failures (the queue may already be gone). */
+    public void deleteQueue(String queueUrl) {
+        try {
+            sqs.deleteQueue(DeleteQueueRequest.builder().queueUrl(queueUrl).build());
+        } catch (Exception e) {
+            // Best effort: nothing useful to do if the queue is already gone or unreachable.
+        }
     }
 }
