@@ -34,6 +34,10 @@ public class App {
     static int workerFilesN = 0;
     static boolean debug = false;
     static boolean terminate = false;
+    static final String MANAGER_JAR_LOCAL_PATH = "target/Manager.jar";
+    static final String WORKER_JAR_LOCAL_PATH = "target/Worker.jar";
+    static final String MANAGER_JAR_S3_KEY = "Manager.jar";
+    static final String WORKER_JAR_S3_KEY = "Worker.jar";
 
     public static void main(String[] args) {// args = [inFilePath, outFilePath, tasksPerWorker, -t (terminate, optional)
                                             // -D (Debug, optional)]
@@ -45,8 +49,10 @@ public class App {
         outFilePath = args[1];
         managerClientsN = Integer.parseInt(args[2]);
         workerFilesN = Integer.parseInt(args[3]);
+        SqsClient sqs = SqsClient.builder().region(Region.US_EAST_1).build();
+        S3Client s3 = S3Client.builder().region(Region.US_EAST_1).build();
         for (String arg : args) {
-            if (arg.equals("-t")) {
+            if (arg.equals("terminate") || arg.equals("-t")) {
                 terminate = true;
             }
             if (arg.equals("-D")) {
@@ -54,13 +60,12 @@ public class App {
             }
         }
         try {
-            setup();
+            setup(s3);
             createEC2();
         } catch (Exception e) {
             e.printStackTrace();
         }
-        SqsClient sqs = SqsClient.builder().region(Region.US_EAST_1).build();
-        S3Client s3 = S3Client.builder().region(Region.US_EAST_1).build();
+
         String localAppID = UUID.randomUUID().toString();
         CreateQueueResponse createQueueResponse = sqs
                 .createQueue(CreateQueueRequest.builder().queueName("AppToManager").build());
@@ -83,6 +88,15 @@ public class App {
         sqs.close();
         s3.close();
         System.out.println("[INFO] LocalApp finished successfully.");
+    }
+
+    private static void uploadJarToS3(S3Client s3, String bucketName, String localPath, String s3Key) {
+        PutObjectRequest putObjectRequest = PutObjectRequest.builder()
+                .bucket(bucketName)
+                .key(s3Key)
+                .build();
+        s3.putObject(putObjectRequest, RequestBody.fromFile(Paths.get(localPath)));
+        System.out.println("[INFO] Uploaded " + s3Key + " to S3.");
     }
 
     public static void sendTerminate(SqsClient sqs, String queueURL, String localAppID) {
@@ -131,10 +145,12 @@ public class App {
     }
 
     // Create Buckets, Create Queues, Upload JARs to S3
-    private static void setup() {
+    private static void setup(S3Client s3) {
         if (debug)
             System.out.println("[DEBUG] Create bucket if not exist.");
         aws.createBucketIfNotExists(aws.bucketName);
+        uploadJarToS3(s3, aws.bucketName, MANAGER_JAR_LOCAL_PATH, MANAGER_JAR_S3_KEY);
+        uploadJarToS3(s3, aws.bucketName, WORKER_JAR_LOCAL_PATH, WORKER_JAR_S3_KEY);
     }
 
     private static void createEC2() {
@@ -145,8 +161,12 @@ public class App {
         }
         System.out.println("No active Manager found. Launching a new Manager EC2 instance...");
         String ec2Script = "#!/bin/bash\n" +
-                "echo Hello World\n";
+                    "aws s3 cp s3://" + aws.bucketName + "/" + MANAGER_JAR_S3_KEY + " /home/ec2-user/" + MANAGER_JAR_S3_KEY + "\n" +
+                    "java -jar /home/ec2-user/" + MANAGER_JAR_S3_KEY + " > /home/ec2-user/manager.log 2>&1\n";
         String managerInstanceID = aws.createEC2(ec2Script, "Manager", 1);
+        if (debug) {
+            System.out.println("[DEBUG] Launched Manager Instance ID: " + managerInstanceID);
+        }
     }
 
     public static boolean isManagerRunning(Ec2Client ec2) {
