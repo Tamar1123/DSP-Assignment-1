@@ -15,6 +15,17 @@ public class WorkerTest {
         Queues.setDev(true);
     }
 
+
+    @Test
+    public void realImageOcrSmokeTest() throws Exception {
+        Worker w = new Worker();
+        // החלף בכתובת אמיתית מתוך inputExample.txt
+        String sampleImageUrl = "https://www.cs.bgu.ac.il/~dsps211/Assignments/images/sample.png";
+        String extractedText = w.identify(sampleImageUrl);
+        System.out.println("Extracted text:\n" + extractedText);
+        assertNotNull(extractedText);
+    }
+
     @Test
     public void imageTaskIsAnsweredOnTheManagersQueue() {
         Worker w = new Worker();
