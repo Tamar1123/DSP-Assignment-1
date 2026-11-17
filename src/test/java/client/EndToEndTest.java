@@ -4,11 +4,20 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import server.Manager;
 import server.Worker;
+import utils.Queue;
 import utils.Queues;
+import utils.Received;
 
 import java.io.File;
 import java.io.PrintWriter;
 import java.util.Scanner;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -27,6 +36,7 @@ public class EndToEndTest {
         Queues.reset();
         Queues.setDev(true);
         App.debug = false;
+        App.retryDelayMillis = 0;
         App.terminate = false;
     }
 
@@ -68,6 +78,102 @@ public class EndToEndTest {
             for (Thread thread : workerThreads) {
                 thread.join(JOIN_TIMEOUT_MILLIS);
             }
+        }
+    }
+
+    @Test
+    public void busyClientBacksOffAndIsAdmittedWhenSlotFrees() throws Exception {
+        App.managerClientsN = 1;
+        App.workerFilesN = 1;
+
+        final List<Long> directoryLookups = Collections.synchronizedList(new ArrayList<Long>());
+        App.managerDirectory = new ManagerDirectory() {
+            @Override
+            public List<String> freeManagers() {
+                directoryLookups.add(Long.valueOf(System.nanoTime()));
+                return Arrays.asList("manager-e2e");
+            }
+
+            @Override
+            public void startManager(int freeSlots) {
+                fail("the in-memory test already has a manager");
+            }
+        };
+
+        Manager manager = new Manager("manager-e2e", 1, 1);
+        Worker worker = new Worker();
+        File firstInput = inputFile("e2e-first", "http://first");
+        File secondInput = inputFile("e2e-second", "http://second");
+        CompletableFuture<String> firstSummary = null;
+        CompletableFuture<String> secondSummary = null;
+        try {
+            App.inputFileName = firstInput.getAbsolutePath();
+            firstSummary = CompletableFuture.supplyAsync(new Supplier<String>() {
+                @Override
+                public String get() {
+                    return App.run();
+                }
+            });
+            Received firstTask = Queues.get(Queues.managerQueueName()).receive(1, 5).get(0);
+            assertEquals(firstInput.getAbsolutePath(), firstTask.getMessage().getInputFileLocation());
+
+            App.inputFileName = secondInput.getAbsolutePath();
+            secondSummary = CompletableFuture.supplyAsync(new Supplier<String>() {
+                @Override
+                public String get() {
+                    return App.run();
+                }
+            });
+            Received secondTask = Queues.get(Queues.managerQueueName()).receive(1, 5).get(0);
+            assertEquals(secondInput.getAbsolutePath(), secondTask.getMessage().getInputFileLocation());
+            String firstClientID = firstTask.getMessage().getLocalAppID();
+            String secondClientID = secondTask.getMessage().getLocalAppID();
+            assertNotEquals(firstClientID, secondClientID);
+
+            // Make both requests available in the same receive batch. The first takes the only
+            // slot; the second receives the manager's busy reply and must retry as the same client.
+            Queue managerQueue = Queues.get(Queues.managerQueueName());
+            managerQueue.release(firstTask);
+            managerQueue.release(secondTask);
+            manager.startOnce();
+            assertEquals(1, manager.getActiveClients());
+            assertEquals(1, manager.getRejectedClients(), "second client was not told the manager was busy");
+
+            Received retry = managerQueue.receive(1, 5).get(0);
+            assertEquals(secondClientID, retry.getMessage().getLocalAppID());
+            assertEquals(secondInput.getAbsolutePath(), retry.getMessage().getInputFileLocation());
+            assertEquals(3, directoryLookups.size(), "retry must re-check the manager directory");
+            managerQueue.release(retry);
+
+            worker.startOnce();
+            manager.startOnce(); // done-OCR is processed although the request queue is gated
+            assertEquals(0, manager.getActiveClients(), "first completion did not free the slot");
+            assertNotNull(firstSummary.get(5, TimeUnit.SECONDS));
+
+            manager.startOnce(); // now the retry is admitted into the freed slot
+            assertEquals(1, manager.getActiveClients());
+            worker.startOnce();
+            manager.startOnce();
+
+            String firstLocation = firstSummary.get(5, TimeUnit.SECONDS);
+            String secondLocation = secondSummary.get(5, TimeUnit.SECONDS);
+            assertNotNull(firstLocation);
+            assertNotNull(secondLocation);
+            assertNotEquals(firstLocation, secondLocation);
+            assertSummaryCovers(firstLocation, "http://first");
+            assertSummaryCovers(secondLocation, "http://second");
+            assertEquals(2, manager.getServedClients());
+            new File(firstLocation).deleteOnExit();
+            new File(secondLocation).deleteOnExit();
+        } finally {
+            worker.shutdown();
+            if (firstSummary != null && !firstSummary.isDone()) {
+                firstSummary.cancel(true);
+            }
+            if (secondSummary != null && !secondSummary.isDone()) {
+                secondSummary.cancel(true);
+            }
+            App.managerDirectory = new ManagerFinder();
         }
     }
 

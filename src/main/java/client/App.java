@@ -17,6 +17,11 @@ public class App {
     public static boolean debug = false;
     static boolean terminate = false;
 
+    /** Pause before resending after a busy reply. Tests set it to 0. */
+    static long retryDelayMillis = 5000L;
+
+    static ManagerDirectory managerDirectory = new ManagerFinder();
+
     public static void main(String[] args) {// args = [inputFileName, outputFileName, manager-clients-n, worker-files-n, terminate (optional), -D (Debug, optional)]
         if (args.length < 4) {
             throw new IllegalArgumentException("Not enough arguments. Usage: java -jar <jar> inputFileName outputFileName manager-clients-n worker-files-n [terminate]");
@@ -43,30 +48,20 @@ public class App {
     }
 
     /**
-     * Sends the new task to the manager and waits for this client's summary.
-     *
-     * A per-client reply queue is created before the request is sent, so the manager can
-     * never answer before the client is listening. The inbox is deliberately left in place
-     * for inspection after the run; it is not reset or deleted here.
+     * Sends the new task and waits for this client's summary.
+     * The reply queue is created first so the manager can never answer into a missing queue.
      *
      * @return the S3 location of the summary file
      */
     static String run() {
         String localAppID = UUID.randomUUID().toString();
-        // Create the inbox before sending the request: in SQS mode a lazily constructed
-        // SqsQueue exists only in this JVM, so the manager could otherwise answer into a
-        // queue that was never created.
         Queues.create(Queues.clientQueueName(localAppID));
         Queues.create(Queues.managerQueueName());
         Queue inbox = Queues.get(Queues.clientQueueName(localAppID));
         Queue managerQueue = Queues.get(Queues.managerQueueName());
 
         // TODO: upload inputFileName to S3 and send the S3 location instead.
-        if (debug)
-            System.out.println("[DEBUG] Sending NEW_TASK for " + inputFileName + " as " + localAppID);
-        managerQueue.send(Message.createNewTask(inputFileName, localAppID));
-
-        Message done = await(inbox, Message.MessageType.DONE_TASK);
+        Message done = requestTask(managerQueue, inbox, localAppID, managerDirectory);
 
         if (terminate) {
             if (debug)
@@ -78,16 +73,56 @@ public class App {
         return done.getOutputFileLocation();
     }
 
+    /**
+     * Sends {@code NEW_TASK} and returns the successful {@code DONE_TASK}.
+     * Busy reply (error, no location): the tag was stale, so re-find a manager and resend.
+     * Error with a location field: terminal failure, thrown.
+     */
+    static Message requestTask(Queue managerQueue, Queue inbox, String localAppID,
+                               ManagerDirectory directory) {
+        while (true) {
+            sendNewTask(managerQueue, localAppID, directory);
+            Message reply = await(inbox, Message.MessageType.DONE_TASK);
+            if (!reply.isError()) {
+                return reply;
+            }
+            if (reply.getOutputFileLocation() != null) {
+                throw new IllegalStateException("Manager failed to complete task: "
+                        + reply.getOutputFileLocation());
+            }
+            if (debug)
+                System.out.println("[DEBUG] Manager busy, retrying " + localAppID);
+            pauseBeforeRetry();
+        }
+    }
+
+    /** Makes sure a manager is available, then sends the request. */
+    private static void sendNewTask(Queue managerQueue, String localAppID,
+                                    ManagerDirectory directory) {
+        boolean started = directory.ensureManager(managerClientsN);
+        if (debug)
+            System.out.println("[DEBUG] " + (started ? "Started a manager" : "Using a free manager"));
+        managerQueue.send(Message.createNewTask(inputFileName, localAppID));
+    }
+
+    private static void pauseBeforeRetry() {
+        try {
+            Thread.sleep(retryDelayMillis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting to retry", e);
+        }
+    }
+
     /** Polls {@code inbox} until a message of {@code expected} arrives. */
     private static Message await(Queue inbox, Message.MessageType expected) {
         while (true) {
-            List<Received> received = inbox.receive(1, 1);
-            for (Received r : received) {
+            for (Received r : inbox.receive(1, 1)) {
                 if (r.getMessage().getType() == expected) {
                     inbox.delete(r);
                     return r.getMessage();
                 }
-                // Unexpected traffic on this queue: put it back for the next poll.
+                // Not ours to consume: put it back.
                 inbox.release(r);
             }
         }
@@ -101,7 +136,7 @@ public class App {
     }
 
     private static void createEC2() {
-        String ec2Script = "#!/bin/bash\n" +
+        String ec2Script = "#!/bin/bash\n" + 
                 "echo Hello World\n";
         String managerInstanceID = aws.createEC2(ec2Script, "thisIsJustAString", 1);
     }

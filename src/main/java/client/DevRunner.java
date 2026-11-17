@@ -23,12 +23,19 @@ public final class DevRunner {
     }
 
     public static void main(String[] args) throws InterruptedException {
+        if (args.length < 4) {
+            throw new IllegalArgumentException("Not enough arguments. Usage: java -cp <classes+deps> client.DevRunner inputFileName outputFileName manager-clients-n worker-files-n [terminate]");
+        }
+
         // Honour the shared switch: DEV (the default) keeps everything in memory. With DEV
         // false this JVM would use real SQS queues and the local manager/workers would be the
         // only consumers, which is a useful smoke test but not the deployment layout.
         Queues.setDev(Queues.DEV);
 
-        Manager manager = new Manager();
+        // Same arguments as App.main: honour the grader's inputs instead of the defaults.
+        int managerClientsN = Integer.parseInt(args[2]);
+        int workerFilesN = Integer.parseInt(args[3]);
+        Manager manager = new Manager(managerClientsN, workerFilesN);
         Thread managerThread = new Thread(manager, "manager");
         managerThread.start();
 
