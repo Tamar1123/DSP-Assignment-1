@@ -73,11 +73,14 @@ public class ManagerTest {
                 .send(Message.createDoneOCR("http://a", "t", "nobody"));
         m.startOnce();
         assertTrue(Queues.get(Queues.clientQueueName("nobody")).receive(1, 1).isEmpty());
+        assertEquals(0, m.getServedClients());
+        assertEquals(0, m.getActiveClients());
     }
 
     @Test
     public void terminateAcksServedClientsAndStops() throws Exception {
-        String in = inputFile();
+        // app-5 is still in flight (one image outstanding), so it is in the map and gets the ack.
+        String in = inputFile("http://a");
         Manager m = new Manager("mgr-5");
         Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-5"));
         Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-5"));
@@ -97,5 +100,110 @@ public class ManagerTest {
         Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-6"));
         m.startOnce();
         assertEquals(1, Queues.get(Queues.workerQueueName()).receive(10, 2).size());
+    }
+
+    @Test
+    public void admitsUpToMaxClientsAndAnswersTheNextBusy() throws Exception {
+        String in = inputFile("http://a");
+        Manager m = new Manager("mgr-7", 2, 5);
+        for (String app : new String[] {"app-7a", "app-7b", "app-7c"}) {
+            Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, app));
+        }
+        // All three arrive in one batch: the gate was open when the batch was received.
+        m.startOnce();
+        assertEquals(2, m.getActiveClients());
+        assertFalse(m.hasCapacity());
+        assertEquals(2, Queues.get(Queues.workerQueueName()).receive(10, 1).size());
+
+        List<Received> busy = Queues.get(Queues.clientQueueName("app-7c")).receive(1, 1);
+        assertEquals(1, busy.size());
+        assertEquals(Message.MessageType.DONE_TASK, busy.get(0).getMessage().getType());
+        assertTrue(busy.get(0).getMessage().isError());
+        assertNull(busy.get(0).getMessage().getOutputFileLocation());
+        assertEquals(1, m.getRejectedClients());
+        assertEquals(0, m.getServedClients());
+    }
+
+    @Test
+    public void fullManagerDoesNotPollTheRequestQueue() throws Exception {
+        String in = inputFile("http://a");
+        Manager m = new Manager("mgr-8", 1, 5);
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-8a"));
+        m.startOnce();
+        assertFalse(m.hasCapacity());
+
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-8b"));
+        m.startOnce();
+        // Left on the request queue for a manager with room, not answered busy here.
+        assertTrue(Queues.get(Queues.clientQueueName("app-8b")).receive(1, 1).isEmpty());
+        assertEquals(0, m.getRejectedClients());
+        assertEquals(1, Queues.get(Queues.managerQueueName()).receive(10, 1).size());
+    }
+
+    @Test
+    public void finishFreesTheSlotForTheNextClient() throws Exception {
+        String in = inputFile("http://a");
+        Manager m = new Manager("mgr-9", 1, 5);
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-9a"));
+        m.startOnce();
+        assertFalse(m.hasCapacity());
+
+        Queues.get(Queues.doneOcrQueueName("mgr-9"))
+                .send(Message.createDoneOCR("http://a", "text", "app-9a"));
+        m.startOnce();
+        assertEquals(1, m.getServedClients());
+        assertEquals(0, m.getActiveClients());
+        assertTrue(m.hasCapacity());
+        assertEquals(1, Queues.get(Queues.clientQueueName("app-9a")).receive(1, 1).size());
+
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-9b"));
+        m.startOnce();
+        assertEquals(1, m.getActiveClients());
+        assertEquals(2, Queues.get(Queues.workerQueueName()).receive(10, 1).size());
+        assertEquals(0, m.getRejectedClients());
+    }
+
+    @Test
+    public void emptyInputFreesItsSlotAtOnce() throws Exception {
+        Manager m = new Manager("mgr-10", 1, 5);
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(inputFile(), "app-10"));
+        m.startOnce();
+        assertEquals(1, m.getServedClients());
+        assertTrue(m.hasCapacity());
+    }
+
+    @Test
+    public void duplicateNewTaskIsOneEntryAndNotBusy() throws Exception {
+        String in = inputFile("http://a", "http://b");
+        Manager m = new Manager("mgr-11", 1, 5);
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-11"));
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-11"));
+        m.startOnce();
+        assertEquals(1, m.getActiveClients());
+        assertEquals(0, m.getRejectedClients());
+        assertEquals(2, Queues.get(Queues.workerQueueName()).receive(10, 1).size());
+        assertTrue(Queues.get(Queues.clientQueueName("app-11")).receive(1, 1).isEmpty());
+    }
+
+    @Test
+    public void summaryFailureAnswersErrorAndStillFreesTheSlot() throws Exception {
+        String in = inputFile();
+        // A directory where the summary file must be written makes writeSummary fail.
+        assertTrue(new File(in + ".summary").mkdir());
+        Manager m = new Manager("mgr-12", 1, 5);
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-12"));
+        m.startOnce();
+
+        List<Received> replies = Queues.get(Queues.clientQueueName("app-12")).receive(1, 1);
+        assertEquals(1, replies.size());
+        assertEquals(Message.MessageType.DONE_TASK, replies.get(0).getMessage().getType());
+        assertTrue(replies.get(0).getMessage().isError(), "client must be told, not left hanging");
+        assertNotNull(replies.get(0).getMessage().getOutputFileLocation(),
+                "summary failures need a description distinct from a busy reply");
+        assertTrue(replies.get(0).getMessage().getOutputFileLocation().startsWith("Summary failure:"));
+        assertEquals(0, m.getServedClients());
+        assertEquals(0, m.getActiveClients());
+        assertTrue(m.hasCapacity());
+        assertTrue(m.isRunning());
     }
 }
