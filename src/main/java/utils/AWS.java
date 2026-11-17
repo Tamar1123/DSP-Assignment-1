@@ -10,7 +10,13 @@ import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.CreateQueueRequest;
 import software.amazon.awssdk.services.sqs.model.DeleteQueueRequest;
 
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 public class AWS {
     private final S3Client s3;
@@ -22,8 +28,6 @@ public class AWS {
     public static Region region1 = Region.US_WEST_2;
     public static Region region2 = Region.US_EAST_1;
 
-    private static final AWS instance = new AWS();
-
     private AWS() {
         s3 = S3Client.builder().region(region1).build();
         sqs = SqsClient.builder().region(region1).build();
@@ -31,7 +35,11 @@ public class AWS {
     }
 
     public static AWS getInstance() {
-        return instance;
+        return InstanceHolder.INSTANCE;
+    }
+
+    private static final class InstanceHolder {
+        private static final AWS INSTANCE = new AWS();
     }
 
     public String bucketName = "only-together2";
@@ -58,43 +66,135 @@ public class AWS {
 
     // EC2
     public String createEC2(String script, String tagName, int numberOfInstances) {
-        Ec2Client ec2 = Ec2Client.builder().region(region2).build();
-        RunInstancesRequest runRequest = (RunInstancesRequest) RunInstancesRequest.builder()
+        return createEC2(script, tagName, numberOfInstances, UNKNOWN_FREE);
+    }
+
+    /**
+     * Starts instances and tags them with {@code Name} and, when {@code freeSlots} is not
+     * {@link #UNKNOWN_FREE}, with the manager free-slot hint. A caller starting a manager
+     * passes {@code manager-clients-n} so the very first describe call already sees it.
+     */
+    public String createEC2(String script, String tagName, int numberOfInstances, int freeSlots) {
+        List<Tag> tags = new ArrayList<>();
+        tags.add(Tag.builder().key("Name").value(tagName).build());
+        if (freeSlots != UNKNOWN_FREE) {
+            tags.add(Tag.builder().key(FREE_TAG).value(formatFreeSlots(freeSlots)).build());
+        }
+        RunInstancesRequest runRequest = RunInstancesRequest.builder()
                 .instanceType(InstanceType.M4_LARGE)
                 .imageId(ami)
                 .maxCount(numberOfInstances)
                 .minCount(1)
                 .keyName("vockey")
                 .iamInstanceProfile(IamInstanceProfileSpecification.builder().name("LabInstanceProfile").build())
-                .userData(Base64.getEncoder().encodeToString((script).getBytes()))
+                .userData(Base64.getEncoder().encodeToString(script.getBytes()))
+                .tagSpecifications(TagSpecification.builder()
+                        .resourceType(ResourceType.INSTANCE)
+                        .tags(tags)
+                        .build())
                 .build();
-
 
         RunInstancesResponse response = ec2.runInstances(runRequest);
-
         String instanceId = response.instances().get(0).instanceId();
-
-        software.amazon.awssdk.services.ec2.model.Tag tag = Tag.builder()
-                .key("Name")
-                .value(tagName)
-                .build();
-
-        CreateTagsRequest tagRequest = (CreateTagsRequest) CreateTagsRequest.builder()
-                .resources(instanceId)
-                .tags(tag)
-                .build();
-
-        try {
-            ec2.createTags(tagRequest);
-            System.out.printf(
-                    "[DEBUG] Successfully started EC2 instance %s based on AMI %s\n",
+        if (client.App.debug) {
+            System.out.printf("[DEBUG] Successfully started EC2 instance %s based on AMI %s%n",
                     instanceId, ami);
-
-        } catch (Ec2Exception e) {
-            System.err.println("[ERROR] " + e.getMessage());
-            System.exit(1);
         }
         return instanceId;
+    }
+
+    // ---- manager free-slot tag -------------------------------------------------
+
+    /** EC2 tag key carrying how many more clients a manager can admit. */
+    public static final String FREE_TAG = "free";
+
+    /** Sentinel for "no usable free count" (missing or malformed tag). */
+    public static final int UNKNOWN_FREE = -1;
+
+    /** One entry of {@link #freeManagers()}: instance id plus its free-slot hint. */
+    public static final class ManagerSlot extends FreeSlotTags.ManagerSlot {
+        public ManagerSlot(String id, int free) {
+            super(id, free);
+        }
+    }
+
+    /** Pure compatibility delegates; they do not initialize the AWS singleton. */
+    public static String formatFreeSlots(int free) {
+        return FreeSlotTags.formatFreeSlots(free);
+    }
+
+    public static int parseFreeSlots(String raw) {
+        return FreeSlotTags.parseFreeSlots(raw);
+    }
+
+    public static int freeSlotsOf(Map<String, String> tags) {
+        return FreeSlotTags.freeSlotsOf(tags);
+    }
+
+    public static ManagerSlot chooseFreeManager(List<ManagerSlot> slots) {
+        return (ManagerSlot) FreeSlotTags.chooseFreeManager(slots);
+    }
+
+    /**
+     * Writes the manager's current free-slot count. Tags are a hint without
+     * compare-and-set, so this is best effort and never fails the caller.
+     */
+    public void setFreeSlots(String managerID, int free) {
+        if (managerID == null || managerID.isEmpty()) {
+            return;
+        }
+        try {
+            ec2.createTags(CreateTagsRequest.builder()
+                    .resources(managerID)
+                    .tags(Tag.builder().key(FREE_TAG).value(formatFreeSlots(free)).build())
+                    .build());
+            if (client.App.debug) {
+                System.out.printf("[DEBUG] manager %s tagged %s=%s%n",
+                        managerID, FREE_TAG, formatFreeSlots(free));
+            }
+        } catch (RuntimeException e) {
+            System.err.println("[WARN] could not tag manager " + managerID + ": " + e.getMessage());
+        }
+    }
+
+    /** Lists running managers with a usable {@code free} tag, most free first. */
+    public List<ManagerSlot> freeManagers() {
+        List<ManagerSlot> managers = new ArrayList<>();
+        String nextToken = null;
+        try {
+            do {
+                DescribeInstancesRequest request = DescribeInstancesRequest.builder()
+                        .filters(
+                                Filter.builder().name("tag:Name").values("manager").build(),
+                                Filter.builder().name("tag-key").values(FREE_TAG).build(),
+                                Filter.builder().name("instance-state-name").values("running").build())
+                        .nextToken(nextToken)
+                        .build();
+                DescribeInstancesResponse response = ec2.describeInstances(request);
+                for (Reservation reservation : response.reservations()) {
+                    for (Instance instance : reservation.instances()) {
+                        Map<String, String> tags = new HashMap<>();
+                        for (Tag tag : instance.tags()) {
+                            tags.put(tag.key(), tag.value());
+                        }
+                        int free = freeSlotsOf(tags);
+                        if (free != UNKNOWN_FREE) {
+                            managers.add(new ManagerSlot(instance.instanceId(), free));
+                        }
+                    }
+                }
+                nextToken = response.nextToken();
+            } while (nextToken != null);
+        } catch (RuntimeException e) {
+            throw new IllegalStateException("Could not list running managers", e);
+        }
+        Collections.sort(managers, new Comparator<ManagerSlot>() {
+            @Override
+            public int compare(ManagerSlot a, ManagerSlot b) {
+                return Integer.compare(b.free, a.free);
+            }
+        });
+        return managers;
     }
 
     // SQS
