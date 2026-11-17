@@ -152,6 +152,7 @@ public class App {
                 "java -jar /home/ec2-user/" + MANAGER_JAR_S3_KEY + " > /home/ec2-user/manager.log 2>&1\n";
         aws.createEC2(ec2Script, "Manager", 1);
         ec2.close();
+    }
 
     private static void uploadJarToS3(S3Client s3, String bucketName, String localPath, String s3Key) {
         PutObjectRequest putObjectRequest = PutObjectRequest.builder()
