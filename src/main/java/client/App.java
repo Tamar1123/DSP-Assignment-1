@@ -46,7 +46,7 @@ public class App {
         managerClientsN = Integer.parseInt(args[2]);
         workerFilesN = Integer.parseInt(args[3]);
         for (String arg : args) {
-            if (arg.equals("terminate")) {
+            if (arg.equals("terminate") || arg.equals("terminate")) {
                 terminate = true;
             }
             if (arg.equals("-D")) {
@@ -54,8 +54,17 @@ public class App {
             }
         }
         try {
+            if (!Queues.isDev()) {
+                setup();
+                createEC2();
+            }
             String summaryLocation = run();
-            System.out.println(summaryLocation);
+            if (!Queues.isDev()) {
+                S3Client s3 = S3Client.builder().region(Region.US_EAST_1).build();
+                downloadFileFromS3(s3, aws.bucketName, summaryLocation, outputFileName);
+                s3.close();
+            }
+            System.out.println("Finished! Output saved to: " + outputFileName);
         } catch (Exception e) {
             e.printStackTrace();
             System.exit(1);
@@ -81,7 +90,12 @@ public class App {
         Queue inbox = Queues.get(Queues.clientQueueName(localAppID));
         Queue managerQueue = Queues.get(Queues.managerQueueName());
 
-        // TODO: upload inputFileName to S3 and send the S3 location instead.
+        String fileLocationToSend = inputFileName;
+        if (!Queues.isDev()) {
+            S3Client s3 = S3Client.builder().region(Region.US_EAST_1).build();
+            fileLocationToSend = uploadFileToS3(s3, aws.bucketName, inputFileName, localAppID);
+            s3.close();
+        }
         if (debug)
             System.out.println("[DEBUG] Sending NEW_TASK for " + inputFileName + " as " + localAppID);
         managerQueue.send(Message.createNewTask(inputFileName, localAppID));
@@ -101,7 +115,7 @@ public class App {
     /** Polls {@code inbox} until a message of {@code expected} arrives. */
     private static Message await(Queue inbox, Message.MessageType expected) {
         while (true) {
-            List<Received> received = inbox.receive(1, 1);
+            List<Received> received = inbox.receive(1, 20);
             for (Received r : received) {
                 if (r.getMessage().getType() == expected) {
                     inbox.delete(r);
