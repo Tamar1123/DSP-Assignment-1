@@ -7,6 +7,13 @@ import utils.Queues;
 import utils.Received;
 
 import java.io.File;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.UUID;
 
 /**
  * A worker: takes one image task at a time from the shared worker queue, OCRs the image and
@@ -26,6 +33,20 @@ public class Worker implements Runnable {
 
     public Worker() {
         this.workerQueue = Queues.get(Queues.workerQueueName());
+    }
+
+    public static void main(String[] args) {
+        Queues.setDev(false);
+        System.out.println("[WORKER] Starting Worker node in AWS SQS mode...");
+        Worker worker = new Worker();
+
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("[WORKER] Shutting down...");
+            worker.shutdown();
+        }));
+
+        worker.run();
+        System.out.println("[WORKER] Worker stopped.");
     }
 
     @Override
@@ -63,10 +84,55 @@ public class Worker implements Runnable {
      * image at {@code imageURL} to a local file, then return
      * {@link #processOne(String) processOne(localFile.getAbsolutePath())}.
      */
-    public String identify(String imageURL) {
-        // TODO: download imageURL to a local file, then call processOne(localFile path).
-        // Those are the two real steps; this stub keeps the pipeline offline-testable.
-        return "[dev] OCR of " + imageURL;
+    public String identify(String imageURL) throws Exception {
+        if (Queues.isDev() && (imageURL.startsWith("http://img") || imageURL.startsWith("http://a") || imageURL.startsWith("http://b"))) {
+            return "[dev] OCR of " + imageURL;
+        }
+
+        Path tempFile = null;
+        try {
+            tempFile = downloadImage(imageURL);
+            return processOne(tempFile.toAbsolutePath().toString());
+        } catch (Exception e) {
+            throw new RuntimeException(e.getMessage(), e);
+        } finally {
+            if (tempFile != null) {
+                try {
+                    Files.deleteIfExists(tempFile);
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    private Path downloadImage(String imageURL) throws Exception {
+        URL url = new URL(imageURL);
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setRequestProperty("User-Agent", "Mozilla/5.0"); // מונע חסימות 403 מאתרים מסוימים
+        connection.setConnectTimeout(10000); // 10 שניות timeout להתחברות
+        connection.setReadTimeout(15000);    // 15 שניות timeout להורדה
+
+        int status = connection.getResponseCode();
+        if (status < 200 || status >= 300) {
+            throw new RuntimeException("HTTP error " + status + " while downloading image");
+        }
+
+        // חילוץ סיומת הקובץ (כדי ש-Asprise יזהה את הפורמט, ברירת מחדל .png)
+        String extension = ".png";
+        String pathPart = url.getPath();
+        int dotIndex = pathPart.lastIndexOf('.');
+        if (dotIndex != -1 && dotIndex < pathPart.length() - 1) {
+            String ext = pathPart.substring(dotIndex).toLowerCase();
+            if (ext.matches("\\.(png|jpg|jpeg|gif|bmp|tif|tiff)")) {
+                extension = ext;
+            }
+        }
+
+        Path tempFile = Files.createTempFile("ocr_" + UUID.randomUUID(), extension);
+        try (InputStream in = connection.getInputStream()) {
+            Files.copy(in, tempFile, StandardCopyOption.REPLACE_EXISTING);
+        }
+        return tempFile;
     }
 
     private void handle(Received received) {
@@ -111,8 +177,19 @@ public class Worker implements Runnable {
         Ocr.setUp(); // one time setup
         Ocr ocr = new Ocr(); // create a new OCR engine
         ocr.startEngine("eng", Ocr.SPEED_FASTEST); // English
-        String s = ocr.recognize(new File[] {new File(inputFileName)}, Ocr.RECOGNIZE_TYPE_ALL, Ocr.OUTPUT_FORMAT_PLAINTEXT);
-        ocr.stopEngine();
-        return s;
+        try {
+            String result = ocr.recognize(
+                    new File[]{new File(inputFileName)},
+                    Ocr.RECOGNIZE_TYPE_TEXT,
+                    Ocr.OUTPUT_FORMAT_PLAINTEXT
+            );
+            return result == null ? "" : result.trim();
+        } finally {
+            ocr.stopEngine();
+        }
     }
+
+    
+
+    
 }

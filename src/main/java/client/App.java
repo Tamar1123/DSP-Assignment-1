@@ -5,8 +5,17 @@ import utils.Queue;
 import utils.Queues;
 import utils.Received;
 
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.UUID;
+
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.core.sync.ResponseTransformer;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 public class App {
     final static utils.AWS aws = utils.AWS.getInstance();
@@ -16,6 +25,11 @@ public class App {
     static int workerFilesN = 0;
     public static boolean debug = false;
     static boolean terminate = false;
+
+    static final String MANAGER_JAR_LOCAL_PATH = "target/Manager.jar";
+    static final String WORKER_JAR_LOCAL_PATH = "target/Worker.jar";
+    static final String MANAGER_JAR_S3_KEY = "Manager.jar";
+    static final String WORKER_JAR_S3_KEY = "Worker.jar";
 
     /** Pause before resending after a busy reply. Tests set it to 0. */
     static long retryDelayMillis = 5000L;
@@ -39,8 +53,16 @@ public class App {
             }
         }
         try {
+            if (!Queues.isDev()) {
+                setup();
+            }
             String summaryLocation = run();
-            System.out.println(summaryLocation);
+            if (!Queues.isDev()) {
+                S3Client s3 = S3Client.builder().region(Region.US_EAST_1).build();
+                downloadFileFromS3(s3, aws.bucketName, summaryLocation, outputFileName);
+                s3.close();
+            }
+            System.out.println("Finished! Output saved to: " + outputFileName);
         } catch (Exception e) {
             e.printStackTrace();
             System.exit(1);
@@ -50,6 +72,8 @@ public class App {
     /**
      * Sends the new task and waits for this client's summary.
      * The reply queue is created first so the manager can never answer into a missing queue.
+     * In a real run the input is uploaded to S3 first and that location is what the manager
+     * receives; the manager cannot read this machine's filesystem.
      *
      * @return the S3 location of the summary file
      */
@@ -60,8 +84,16 @@ public class App {
         Queue inbox = Queues.get(Queues.clientQueueName(localAppID));
         Queue managerQueue = Queues.get(Queues.managerQueueName());
 
-        // TODO: upload inputFileName to S3 and send the S3 location instead.
-        Message done = requestTask(managerQueue, inbox, localAppID, managerDirectory);
+        String fileLocationToSend = inputFileName;
+        if (!Queues.isDev()) {
+            S3Client s3 = S3Client.builder().region(Region.US_EAST_1).build();
+            fileLocationToSend = uploadFileToS3(s3, aws.bucketName, inputFileName, localAppID);
+            s3.close();
+        }
+        if (debug)
+            System.out.println("[DEBUG] Sending NEW_TASK for " + fileLocationToSend + " as " + localAppID);
+
+        Message done = requestTask(managerQueue, inbox, localAppID, managerDirectory, fileLocationToSend);
 
         if (terminate) {
             if (debug)
@@ -79,9 +111,9 @@ public class App {
      * Error with a location field: terminal failure, thrown.
      */
     static Message requestTask(Queue managerQueue, Queue inbox, String localAppID,
-                               ManagerDirectory directory) {
+                               ManagerDirectory directory, String fileLocationToSend) {
         while (true) {
-            sendNewTask(managerQueue, localAppID, directory);
+            sendNewTask(managerQueue, localAppID, directory, fileLocationToSend);
             Message reply = await(inbox, Message.MessageType.DONE_TASK);
             if (!reply.isError()) {
                 return reply;
@@ -98,11 +130,11 @@ public class App {
 
     /** Makes sure a manager is available, then sends the request. */
     private static void sendNewTask(Queue managerQueue, String localAppID,
-                                    ManagerDirectory directory) {
+                                    ManagerDirectory directory, String fileLocationToSend) {
         boolean started = directory.ensureManager(managerClientsN);
         if (debug)
             System.out.println("[DEBUG] " + (started ? "Started a manager" : "Using a free manager"));
-        managerQueue.send(Message.createNewTask(inputFileName, localAppID));
+        managerQueue.send(Message.createNewTask(fileLocationToSend, localAppID));
     }
 
     private static void pauseBeforeRetry() {
@@ -117,7 +149,8 @@ public class App {
     /** Polls {@code inbox} until a message of {@code expected} arrives. */
     private static Message await(Queue inbox, Message.MessageType expected) {
         while (true) {
-            for (Received r : inbox.receive(1, 1)) {
+            List<Received> received = inbox.receive(1, 20);
+            for (Received r : received) {
                 if (r.getMessage().getType() == expected) {
                     inbox.delete(r);
                     return r.getMessage();
@@ -130,14 +163,54 @@ public class App {
 
     //Create Buckets, Create Queues, Upload JARs to S3
     private static void setup() {
-        if (debug)
-            System.out.println("[DEBUG] Create bucket if not exist.");
+        if (debug) {
+            System.out.println("[DEBUG] Create bucket if not exist and upload JARs.");
+        }
         aws.createBucketIfNotExists(aws.bucketName);
+        S3Client s3 = S3Client.builder().region(Region.US_EAST_1).build();
+        uploadJarToS3(s3, aws.bucketName, MANAGER_JAR_LOCAL_PATH, MANAGER_JAR_S3_KEY);
+        uploadJarToS3(s3, aws.bucketName, WORKER_JAR_LOCAL_PATH, WORKER_JAR_S3_KEY);
+        s3.close();
     }
 
-    private static void createEC2() {
-        String ec2Script = "#!/bin/bash\n" + 
-                "echo Hello World\n";
-        String managerInstanceID = aws.createEC2(ec2Script, "thisIsJustAString", 1);
+    /**
+     * Starts one manager with {@code freeSlots} free client slots. The instance downloads the
+     * jar uploaded by {@link #setup()} and runs {@code server.Manager} in the background.
+     */
+    static void createEC2(int freeSlots) {
+        String ec2Script = "#!/bin/bash\n" +
+                "aws s3 cp s3://" + aws.bucketName + "/" + MANAGER_JAR_S3_KEY + " /home/ec2-user/" + MANAGER_JAR_S3_KEY + "\n" +
+                "java -jar /home/ec2-user/" + MANAGER_JAR_S3_KEY + " > /home/ec2-user/manager.log 2>&1\n";
+        aws.createEC2(ec2Script, "manager", 1, freeSlots);
+    }
+
+    private static void uploadJarToS3(S3Client s3, String bucketName, String localPath, String s3Key) {
+        PutObjectRequest putObjectRequest = PutObjectRequest.builder()
+                .bucket(bucketName)
+                .key(s3Key)
+                .build();
+        s3.putObject(putObjectRequest, RequestBody.fromFile(Paths.get(localPath)));
+        System.out.println("[INFO] Uploaded " + s3Key + " to S3.");
+    }
+
+    public static String uploadFileToS3(S3Client s3, String bucketName, String localFilePath, String localAppID) {
+        String s3Key = "input-files/" + localAppID + "-" + Paths.get(localFilePath).getFileName().toString();
+        PutObjectRequest putObjectRequest = PutObjectRequest.builder()
+                .bucket(bucketName)
+                .key(s3Key)
+                .build();
+        s3.putObject(putObjectRequest, RequestBody.fromFile(Paths.get(localFilePath)));
+        System.out.println("File uploaded successfully to S3: " + s3Key);
+        return s3Key;
+    }
+
+    public static void downloadFileFromS3(S3Client s3, String bucketName, String s3Key, String localOutputPath) throws Exception {
+        Files.deleteIfExists(Paths.get(localOutputPath));
+        GetObjectRequest getObjectRequest = GetObjectRequest.builder()
+                .bucket(bucketName)
+                .key(s3Key)
+                .build();
+        s3.getObject(getObjectRequest, ResponseTransformer.toFile(Paths.get(localOutputPath)));
+        System.out.println("Summary file downloaded successfully to: " + localOutputPath);
     }
 }

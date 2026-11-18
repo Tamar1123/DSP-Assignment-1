@@ -33,11 +33,7 @@ final class ManagerFinder implements ManagerDirectory {
             return;
         }
         // The launch carries the free-slot tag, so other clients see it and don't start another.
-        AWS.getInstance().createEC2(bootScript(), "manager", 1, freeSlots);
-    }
-
-    /** Known gap: the real boot script (fetch the jar, run server.Manager) is not written. */
-    private String bootScript() {
-        return "#!/bin/bash\n";
+        // App owns the boot script: fetch the uploaded Manager jar and run it.
+        App.createEC2(freeSlots);
     }
 }

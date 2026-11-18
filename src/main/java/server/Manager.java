@@ -107,6 +107,28 @@ public class Manager implements Runnable {
         }
     }
 
+
+    public static void main(String[] args) {
+        Queues.setDev(false);
+        int workerFilesN = 1;
+        if (args.length >= 1) {
+            try {
+                workerFilesN = Integer.parseInt(args[0]);
+            } catch (NumberFormatException e) {
+                System.err.println("[MANAGER] Invalid worker-files-n argument, defaulting to 1");
+            }
+        }
+        System.out.println("[MANAGER] Starting Manager node in AWS SQS mode (workerFilesN=" + workerFilesN + ")...");
+        Manager manager = new Manager();
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("[MANAGER] Shutting down...");
+            manager.shutdown();
+        }));
+
+        manager.run();
+        System.out.println("[MANAGER] Manager stopped.");
+    }
+
     @Override
     public void run() {
         while (running) {
