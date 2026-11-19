@@ -37,6 +37,13 @@ public class QueuesTest {
     }
 
     @Test
+    public void registerReplacesTheQueueGetReturns() {
+        Queue custom = new InMemoryQueue();
+        Queues.register("done_ocr_mgr-1", custom);
+        assertSame(custom, Queues.get("done_ocr_mgr-1"));
+    }
+
+    @Test
     public void devModeReturnsInMemoryQueues() {
         Queues.reset();
         assertTrue(Queues.get("q1", Boolean.TRUE) instanceof InMemoryQueue);

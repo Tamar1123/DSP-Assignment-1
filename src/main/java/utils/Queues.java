@@ -99,6 +99,14 @@ public final class Queues {
         dev = DEV;
     }
 
+    /**
+     * Test/dev seam only: installs {@code queue} under {@code queueName} so
+     * {@link #get(String)} returns it. Production code must not call this.
+     */
+    public static void register(String queueName, Queue queue) {
+        QUEUES.put(queueName, queue);
+    }
+
     private static String sanitize(String prefix, String id) {
         String raw = id == null ? "" : id;
         String replacement = raw.replaceAll("[^A-Za-z0-9_-]", "_");
