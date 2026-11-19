@@ -50,7 +50,7 @@ public final class DevRunner {
         try {
             // App.main exits the JVM on failure, so the shutdown below covers the normal path
             // (and System.exit skips finally blocks, which is fine: the whole JVM goes away).
-            App.main(args);
+            App.execute(args);
         } finally {
             manager.shutdown();
             for (Worker worker : workers) {
