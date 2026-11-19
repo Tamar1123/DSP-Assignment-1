@@ -19,9 +19,8 @@ import java.util.UUID;
  * A worker: takes one image task at a time from the shared worker queue, OCRs the image and
  * reports the text to the manager that issued the task.
  *
- * Workers share one queue, so any worker may take any task. A message is deleted only
- * after a reply has been attempted; a failed OCR still produces an error reply, and a failed
- * reply leaves the worker alive for the next task.
+ * Workers share one queue, so any worker may take any task. A completed task is deleted after
+ * its reply is sent; a task whose reply could not be sent is released so it is delivered again.
  */
 public class Worker implements Runnable {
     private static final int RECEIVE_MAX = 1;
@@ -137,33 +136,59 @@ public class Worker implements Runnable {
 
     private void handle(Received received) {
         Message msg = received.getMessage();
+
+        if (msg.getType() != Message.MessageType.NEW_IMAGE_TASK) {
+            // Poison for a worker: no one else will take it, so drop it instead of spinning.
+            logDebug("worker dropping message of type " + msg.getType());
+            deleteQuietly(received);
+            return;
+        }
+
+        String text;
+        boolean error = false;
         try {
-            if (msg.getType() != Message.MessageType.NEW_IMAGE_TASK) {
-                logDebug("worker dropping message of type " + msg.getType());
-                return;
-            }
+            text = identify(msg.getImageURL());
+        } catch (Exception e) {
+            // Unreadable image is a completed result: report it and keep the task deleted.
+            text = "exception: " + e.getMessage();
+            error = true;
+        }
 
-            String text;
-            boolean error = false;
-            try {
-                text = identify(msg.getImageURL());
-            } catch (Exception e) {
-                text = "exception: " + e.getMessage();
-                error = true;
-            }
+        Message reply = Message.createDoneOCR(msg.getImageURL(), text, msg.getLocalAppID());
+        reply.setError(error);
 
-            Message reply = Message.createDoneOCR(msg.getImageURL(), text, msg.getLocalAppID());
-            reply.setError(error);
-            try {
-                Queues.get(Queues.doneOcrQueueName(msg.getManagerID())).send(reply);
-            } catch (Exception e) {
-                // The manager may be gone; that must not stop this worker.
-                logDebug("could not reply to manager " + msg.getManagerID() + ": " + e.getMessage());
-            }
-        } finally {
-            // Always drop the task: a reply was attempted on every path, so leaving it in the
-            // queue would only cause a duplicate OCR after the visibility timeout.
+        if (sendQuietly(msg.getManagerID(), reply)) {
+            deleteQuietly(received);
+        } else {
+            // The manager never got the answer: give the task back for another delivery.
+            releaseQuietly(received);
+        }
+    }
+
+    private boolean sendQuietly(String managerID, Message reply) {
+        try {
+            Queues.get(Queues.doneOcrQueueName(managerID)).send(reply);
+            return true;
+        } catch (Exception e) {
+            logDebug("could not reply to manager " + managerID + ": " + e.getMessage());
+            return false;
+        }
+    }
+
+    private void deleteQuietly(Received received) {
+        try {
             workerQueue.delete(received);
+        } catch (Exception e) {
+            // At-least-once: the message returns after the visibility timeout.
+            logDebug("delete failed: " + e.getMessage());
+        }
+    }
+
+    private void releaseQuietly(Received received) {
+        try {
+            workerQueue.release(received);
+        } catch (Exception e) {
+            logDebug("release failed; the visibility timeout will return the task: " + e.getMessage());
         }
     }
 
