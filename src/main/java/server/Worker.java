@@ -107,16 +107,15 @@ public class Worker implements Runnable {
     private Path downloadImage(String imageURL) throws Exception {
         URL url = new URL(imageURL);
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-        connection.setRequestProperty("User-Agent", "Mozilla/5.0"); // מונע חסימות 403 מאתרים מסוימים
-        connection.setConnectTimeout(10000); // 10 שניות timeout להתחברות
-        connection.setReadTimeout(15000);    // 15 שניות timeout להורדה
+        connection.setRequestProperty("User-Agent", "Mozilla/5.0"); 
+        connection.setConnectTimeout(10000); 
+        connection.setReadTimeout(15000);
 
         int status = connection.getResponseCode();
         if (status < 200 || status >= 300) {
             throw new RuntimeException("HTTP error " + status + " while downloading image");
         }
 
-        // חילוץ סיומת הקובץ (כדי ש-Asprise יזהה את הפורמט, ברירת מחדל .png)
         String extension = ".png";
         String pathPart = url.getPath();
         int dotIndex = pathPart.lastIndexOf('.');
