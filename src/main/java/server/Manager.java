@@ -31,10 +31,10 @@ public class Manager implements Runnable {
     private static final int RECEIVE_WAIT_SECONDS = 1;
 
     /** Maximum EC2 instances (manager plus workers) the system may run. */
-    static final int MAX_INSTANCES = 20;
+    static final int MAX_INSTANCES = 19;
 
     private static final String WORKER_TAG = "worker";
-    private static final String WORKER_JAR_KEY = "Worker.jar";
+    private static final String WORKER_JAR_KEY = AWS.S3_PREFIX + "Worker.jar";
     private static final String WORKER_JAR_PATH = "/home/ec2-user/" + WORKER_JAR_KEY;
 
     private final String managerID;
@@ -142,7 +142,8 @@ public class Manager implements Runnable {
         }
         System.out.println("[MANAGER] Starting Manager node in AWS SQS mode (managerClientsN="
                 + managerClientsN + ", workerFilesN=" + workerFilesN + ")...");
-        Manager manager = new Manager(UUID.randomUUID().toString(), managerClientsN, workerFilesN);
+        String instanceId = args.length > 2 ? args[2] : UUID.randomUUID().toString();
+        Manager manager = new Manager(instanceId, managerClientsN, workerFilesN);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("[MANAGER] Shutting down...");
             manager.shutdown();
@@ -201,27 +202,42 @@ public class Manager implements Runnable {
         try {
             if (msg.getType() == null) {
                 logDebug("manager ignoring message with no type");
+                source.delete(received);
                 return;
             }
             switch (msg.getType()) {
                 case NEW_TASK:
-                    handleNewTask(msg);
+                    try {
+                        handleNewTask(msg);
+                    } catch (Exception e) {
+                        System.err.println("[MANAGER] failed to handle NEW_TASK: " + e.getMessage());
+                        Message error = Message.createDoneTask(
+                                "Manager error: " + e.getMessage(), msg.getLocalAppID());
+                        error.setError(true);
+                        try {
+                            Queues.get(Queues.clientQueueName(msg.getLocalAppID())).send(error);
+                        } catch (Exception sendEx) {
+                            System.err.println("[MANAGER] could not send error reply: " + sendEx.getMessage());
+                        }
+                    }
+                    source.delete(received);
                     break;
                 case DONE_OCR:
                     handleDoneOcr(msg);
+                    source.delete(received);
                     break;
                 case TERMINATE:
                     handleTerminate();
+                    source.delete(received);
                     break;
                 default:
                     logDebug("unknown message type on manager queue: " + msg.getType());
+                    source.delete(received);
                     break;
             }
         } catch (Exception e) {
-            // Always drop the request so a poison message cannot spin forever.
-            System.err.println("[MANAGER] failed to handle " + msg.getType() + ": " + e.getMessage());
-        } finally {
-            source.delete(received);
+            System.err.println("[MANAGER] unexpected error in handle: " + e.getMessage());
+            try { source.delete(received); } catch (Exception ignored) { }
         }
     }
 
@@ -357,7 +373,12 @@ public class Manager implements Runnable {
             return;
         }
         task.done = true;
-        String summaryLocation = task.inputFileLocation + ".summary";
+        String summaryLocation;
+        if (!Queues.isDev()) {
+            summaryLocation = AWS.S3_PREFIX + "summaries/" + task.localAppID + ".txt";
+        } else {
+            summaryLocation = task.inputFileLocation + ".summary";
+        }
         try {
             writeSummary(task, summaryLocation);
             Queues.get(Queues.clientQueueName(task.localAppID))
@@ -404,7 +425,7 @@ public class Manager implements Runnable {
         }
     }
 
-    private void writeSummary(ClientTask task, String summaryLocation) throws IOException {
+    protected void writeSummary(ClientTask task, String summaryLocation) throws IOException {
         PrintWriter out = new PrintWriter(new File(summaryLocation));
         try {
             for (Map.Entry<String, String> entry : task.texts.entrySet()) {
@@ -415,11 +436,39 @@ public class Manager implements Runnable {
         } finally {
             out.close();
         }
+        if (!Queues.isDev()) {
+            File file = new File(summaryLocation);
+            String s3Key = AWS.S3_PREFIX + "summaries/" + task.localAppID + ".txt";
+            AWS.getInstance().getS3().putObject(
+                    software.amazon.awssdk.services.s3.model.PutObjectRequest.builder()
+                            .bucket(AWS.getInstance().bucketName)
+                            .key(s3Key)
+                            .acl(software.amazon.awssdk.services.s3.model.ObjectCannedACL.PUBLIC_READ)
+                            .build(),
+                    software.amazon.awssdk.core.sync.RequestBody.fromFile(file));
+            file.delete();
+        }
     }
 
-    private List<String> readUrls(String inputFileLocation) throws IOException {
+    protected List<String> readUrls(String inputFileLocation) throws IOException {
+        if (!Queues.isDev()) {
+            // Download from S3 to a temp file, then parse.
+            File tempFile = File.createTempFile("manager-input-", ".txt");
+            tempFile.deleteOnExit();
+            AWS.getInstance().getS3().getObject(
+                    software.amazon.awssdk.services.s3.model.GetObjectRequest.builder()
+                            .bucket(AWS.getInstance().bucketName)
+                            .key(inputFileLocation)
+                            .build(),
+                    software.amazon.awssdk.core.sync.ResponseTransformer.toFile(tempFile));
+            return readUrlsFromFile(tempFile);
+        }
+        return readUrlsFromFile(new File(inputFileLocation));
+    }
+
+    private List<String> readUrlsFromFile(File file) throws IOException {
         List<String> urls = new ArrayList<String>();
-        BufferedReader reader = new BufferedReader(new FileReader(new File(inputFileLocation)));
+        BufferedReader reader = new BufferedReader(new FileReader(file));
         try {
             String line;
             while ((line = reader.readLine()) != null) {

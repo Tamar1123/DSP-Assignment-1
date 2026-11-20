@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import utils.*;
 
 import java.io.File;
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.List;
 
@@ -205,5 +206,65 @@ public class ManagerTest {
         assertEquals(0, m.getActiveClients());
         assertTrue(m.hasCapacity());
         assertTrue(m.isRunning());
+    }
+
+    @Test
+    public void instanceIdFromConstructorIsReportedBack() {
+        Manager m = new Manager("i-12345", 2, 1);
+        assertEquals("i-12345", m.getManagerID());
+    }
+
+    @Test
+    public void workersNeededFormula() {
+        assertEquals(1, Manager.workersNeeded(1, 5));
+        assertEquals(1, Manager.workersNeeded(5, 5));
+        assertEquals(2, Manager.workersNeeded(6, 5));
+        assertEquals(0, Manager.workersNeeded(0, 5));
+    }
+
+    @Test
+    public void nonDevReadUrlsReadsFromS3() {
+        // Pre-register in-memory queues so the manager (and this test) use the in-memory
+        // transport even though isDev() is false: only the S3 read/write paths are simulated.
+        Queues.register(Queues.managerQueueName(), new InMemoryQueue());
+        Queues.register(Queues.workerQueueName(), new InMemoryQueue());
+        Queues.register(Queues.doneOcrQueueName("mgr-s3"), new InMemoryQueue());
+        Queues.setDev(false);
+        try {
+            Manager m = new Manager("mgr-s3", 10, 1) {
+                @Override
+                protected List<String> readUrls(String location) {
+                    assertEquals("assignment1/input-files/app-x-input.txt", location);
+                    return java.util.Arrays.asList("http://a", "http://b");
+                }
+                @Override
+                protected void writeSummary(ClientTask task, String summaryKey) {
+                    assertEquals("assignment1/summaries/app-1.txt", summaryKey);
+                }
+            };
+            Queues.get(Queues.managerQueueName())
+                    .send(Message.createNewTask("assignment1/input-files/app-x-input.txt", "app-1"));
+            m.startOnce();
+            assertEquals(2, Queues.get(Queues.workerQueueName()).receive(10, 1).size());
+        } finally {
+            Queues.setDev(true);
+        }
+    }
+
+    @Test
+    public void failedNewTaskRepliesWithErrorInsteadOfSilentlyDropping() throws Exception {
+        Manager m = new Manager("mgr-err", 10, 1) {
+            @Override
+            protected List<String> readUrls(String location) throws IOException {
+                throw new IOException("S3 unavailable");
+            }
+        };
+        m.startOnce();
+        Queues.get(Queues.managerQueueName())
+                .send(Message.createNewTask("in.txt", "app-err"));
+        m.startOnce();
+        List<Received> replies = Queues.get(Queues.clientQueueName("app-err")).receive(1, 1);
+        assertEquals(1, replies.size());
+        assertTrue(replies.get(0).getMessage().isError());
     }
 }
