@@ -4,6 +4,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import utils.*;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -57,6 +60,28 @@ public class AppTest {
                 return App.run();
             }
         };
+    }
+
+    @Test
+    void generateHtmlFromSummary_formatsImagesAndErrors() throws Exception {
+        Path summaryFile = Files.createTempFile("summary-test-", ".txt");
+        Path htmlFile = Files.createTempFile("output-test-", ".html");
+
+        String content = String.join("\n",
+                "https://example.com/img1.png\tHello <world> & \"friends\"",
+                "https://example.com/bad.png\tERROR: Failed to download image"
+        );
+        Files.write(summaryFile, content.getBytes(StandardCharsets.UTF_8));
+
+        App.generateHtmlFromSummary(summaryFile, htmlFile);
+
+        String html = new String(Files.readAllBytes(htmlFile), StandardCharsets.UTF_8);
+        assertTrue(html.contains("<a href=\"https://example.com/img1.png\"><img src=\"https://example.com/img1.png\""));
+        assertTrue(html.contains("Hello &lt;world&gt; &amp; &quot;friends&quot;"));
+        assertTrue(html.contains("<a href=\"https://example.com/bad.png\">https://example.com/bad.png</a> Failed to download image"));
+
+        Files.deleteIfExists(summaryFile);
+        Files.deleteIfExists(htmlFile);
     }
 
     @Test

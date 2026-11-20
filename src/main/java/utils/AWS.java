@@ -43,6 +43,7 @@ public class AWS {
     }
 
     public String bucketName = "only-together2";
+    public static final String S3_PREFIX = "assignment1/";
 
 
     // S3
@@ -64,6 +65,12 @@ public class AWS {
         }
     }
 
+    public S3Client getS3() {
+        return s3;
+    }
+
+
+    
     // EC2
     public String createEC2(String script, String tagName, int numberOfInstances) {
         return createEC2(script, tagName, numberOfInstances, UNKNOWN_FREE);
@@ -167,7 +174,7 @@ public class AWS {
                         .filters(
                                 Filter.builder().name("tag:Name").values("manager").build(),
                                 Filter.builder().name("tag-key").values(FREE_TAG).build(),
-                                Filter.builder().name("instance-state-name").values("running").build())
+                                Filter.builder().name("instance-state-name").values("running", "pending").build())
                         .nextToken(nextToken)
                         .build();
                 DescribeInstancesResponse response = ec2.describeInstances(request);
