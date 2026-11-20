@@ -16,6 +16,7 @@ public class WorkerTest {
     }
 
 
+    @org.junit.jupiter.api.Disabled("requires network; run manually")
     @Test
     public void realImageOcrSmokeTest() throws Exception {
         Worker w = new Worker();
@@ -80,6 +81,20 @@ public class WorkerTest {
         assertEquals(1, again.size(), "a failed reply must release, not delete, the task");
         assertEquals("http://img", again.get(0).getMessage().getImageURL());
         assertTrue(w.isRunning());
+    }
+
+    @Test
+    public void releasedTaskReappearsOnTheQueue() {
+        Queues.get(Queues.workerQueueName())
+                .send(Message.createNewImageTask("http://img", "app-1", "mgr-1"));
+        // A worker that receives but never deletes (simulates death before reply).
+        List<Received> batch = Queues.get(Queues.workerQueueName()).receive(1, 1);
+        assertEquals(1, batch.size());
+        // Release: the message becomes visible again (dev: re-enqueued at tail).
+        Queues.get(Queues.workerQueueName()).release(batch.get(0));
+        List<Received> again = Queues.get(Queues.workerQueueName()).receive(1, 1);
+        assertEquals(1, again.size());
+        assertEquals("http://img", again.get(0).getMessage().getImageURL());
     }
 
     @Test

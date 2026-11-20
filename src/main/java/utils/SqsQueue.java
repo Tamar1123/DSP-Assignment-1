@@ -94,6 +94,18 @@ public class SqsQueue implements Queue {
                 resolved = queueUrl;
                 if (resolved == null) {
                     resolved = AWS.getInstance().createQueue(queueName);
+                    try {
+                        AWS.getInstance().getSqs().setQueueAttributes(
+                                software.amazon.awssdk.services.sqs.model.SetQueueAttributesRequest.builder()
+                                        .queueUrl(resolved)
+                                        .attributes(java.util.Collections.singletonMap(
+                                                software.amazon.awssdk.services.sqs.model.QueueAttributeName
+                                                        .VISIBILITY_TIMEOUT, "300"))
+                                        .build());
+                    } catch (Exception e) {
+                        System.err.println("[WARN] could not set visibility timeout on "
+                                + queueName + ": " + e.getMessage());
+                    }
                     queueUrl = resolved;
                 }
             }
