@@ -25,7 +25,7 @@ public class AWS {
 
     public static String ami = "ami-00e95a9222311e8ed";
 
-    public static Region region1 = Region.US_WEST_2;
+    public static Region region1 = Region.US_EAST_1;
     public static Region region2 = Region.US_EAST_1;
 
     private AWS() {
@@ -42,24 +42,35 @@ public class AWS {
         private static final AWS INSTANCE = new AWS();
     }
 
-    public String bucketName = "only-together2";
+    public String bucketName = "dsp1-only-together2-262171960391";
     public static final String S3_PREFIX = "assignment1/";
 
 
     // S3
     public void createBucketIfNotExists(String bucketName) {
+      try {
+            s3.headBucket(HeadBucketRequest.builder().bucket(bucketName).build());
+            return;
+        } catch (NoSuchBucketException e) {
+            // Bucket does not exist yet; proceed to create it.
+        } catch (S3Exception e) {
+            if (e.statusCode() == 404) {
+                // Bucket not found; proceed to create it.
+            } else {
+                System.out.println(e.getMessage());
+                return;
+            }
+        }
+
         try {
-            s3.createBucket(CreateBucketRequest
-                    .builder()
+            s3.createBucket(CreateBucketRequest.builder()
                     .bucket(bucketName)
-                    .createBucketConfiguration(
-                            CreateBucketConfiguration.builder()
-                                    .locationConstraint(BucketLocationConstraint.US_WEST_2)
-                                    .build())
                     .build());
             s3.waiter().waitUntilBucketExists(HeadBucketRequest.builder()
                     .bucket(bucketName)
                     .build());
+        } catch (BucketAlreadyOwnedByYouException e) {
+            // Already owned by this account.
         } catch (S3Exception e) {
             System.out.println(e.getMessage());
         }
@@ -136,10 +147,6 @@ public class AWS {
 
     public static int freeSlotsOf(Map<String, String> tags) {
         return FreeSlotTags.freeSlotsOf(tags);
-    }
-
-    public static ManagerSlot chooseFreeManager(List<ManagerSlot> slots) {
-        return (ManagerSlot) FreeSlotTags.chooseFreeManager(slots);
     }
 
     /**
