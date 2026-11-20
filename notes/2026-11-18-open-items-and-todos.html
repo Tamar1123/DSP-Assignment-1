@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PR #3 merge — open items</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa; --fg: #1f2328; --muted: #5b6470; --rule: #e3e5e8;
+    --accent: #255e91; --card: #ffffff; --code-bg: #f1f2f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a; --fg: #e6e8ea; --muted: #9aa4b1; --rule: #2a2f36;
+      --accent: #7fb4e6; --card: #1a1e23; --code-bg: #22272e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 3rem 1.5rem 6rem; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 56rem; margin: 0 auto; }
+  header { border-bottom: 2px solid var(--rule); padding-bottom: 1.25rem; margin-bottom: 2rem; }
+  h1 { font-size: 1.85rem; line-height: 1.2; margin: 0 0 .5rem; letter-spacing: -.01em; }
+  .meta { color: var(--muted); font-size: .85rem; display: flex; flex-wrap: wrap; gap: .35rem 1rem; }
+  .meta span::before { content: "·"; margin-right: 1rem; color: var(--rule); }
+  .meta span:first-child::before { content: none; }
+  h2 { font-size: 1.05rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+       margin: 2.5rem 0 .85rem; font-weight: 600; }
+  p { margin: 0 0 .9rem; }
+  code { font: .86em/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+         background: var(--code-bg); padding: .12em .35em; border-radius: 4px; }
+  ul.plain { padding-left: 1.15rem; margin: .25rem 0 .9rem; }
+  ul.plain li { margin-bottom: .6rem; }
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 2rem 0; }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule);
+           color: var(--muted); font-size: .82rem; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Open items and TODOs</h1>
+    <div class="meta">
+      <span>2026-11-18, re-audited 2026-11-20</span>
+      <span>Baseline <code>2f7fe2d</code> + working tree</span>
+      <span>Source of truth: <code>Assignment 1.pdf</code></span>
+    </div>
+  </header>
+
+<p>HEAD compiles and <code>mvn -o test</code> passes (53 tests). The following items remain open, and the assignment is not yet ready for submission.</p>
+
+<h2>Open — bugs</h2>
+<ul class="plain">
+  <li><strong>Manager ignores its instance ID.</strong> <code>App.createEC2</code> passes <code>$INSTANCE_ID</code> as <code>args[2]</code>, but <code>Manager.main</code> parses only <code>args[0..1]</code> and builds itself with a random UUID. <code>setFreeSlots(managerID, …)</code> therefore tags a non-existent resource, so the <code>free</code> tag keeps the launch value forever and client-side availability is wrong. Identity decision: the EC2 instance ID is the manager identity in production (UUID only for dev/tests).</li>
+  <li><strong>Workers never download the jar.</strong> <code>Manager.launchWorkers</code> copies <code>s3://&lt;bucket&gt;/Worker.jar</code>; <code>App</code> uploads <code>assignment1/Worker.jar</code> (<code>AWS.S3_PREFIX</code>). The boot script fails and no worker runs.</li>
+  <li><strong>Instance cap is 20, not 19.</strong> <code>Manager.MAX_INSTANCES = 20</code>; the PDF says "don't run more than 19 instances", manager included.</li>
+  <li><strong>Manager never touches S3 for the summary.</strong> <code>finish()</code> writes <code>&lt;inputFileLocation&gt;.summary</code> locally (in production the input location is the S3 key, so the parent directory does not exist) and reports that path; the client downloads it from S3. The manager must download the input from S3 and upload the summary, returning the S3 key (local path only in dev).</li>
+  <li><strong>The client builds HTML from an empty file.</strong> <code>App.execute</code> creates a temp file, downloads the summary into <code>outputFileName</code>, then parses the temp file and overwrites <code>outputFileName</code> with the resulting (empty) HTML. Download into the temp path instead.</li>
+  <li><strong>A failed <code>NEW_TASK</code> hangs the client.</strong> <code>Manager.handle</code> deletes the request in <code>finally</code> even when handling threw, without replying; <code>App.await</code> polls without a timeout. Send an error <code>DONE_TASK</code>, and bound the client's wait.</li>
+  <li><strong>A worker that dies mid-message is not proven recoverable.</strong> Deletion after a successful reply exists, but no queue visibility timeout is configured and no test kills a worker between receive and delete. Set a visibility timeout longer than OCR.</li>
+  <li><strong>Offline suite reaches the network.</strong> <code>WorkerTest.realImageOcrSmokeTest</code> downloads a real image and runs OCR; it must not be part of <code>mvn -o test</code>.</li>
+  <li><strong>No AWS credentials / no real-AWS test.</strong> No <code>~/.aws</code> or <code>AWS_*</code> vars; get Learner Lab key, secret and session token (expire ~4h). Verify bucket <code>only-together2</code>, AMI <code>ami-00e95a9222311e8ed</code> (us-east-1), <code>vockey</code>, <code>LabInstanceProfile</code>. Start with a free S3/SQS smoke test, then end to end.</li>
+  <li><strong>Separate AWS integration tests.</strong> Use <code>*IT</code> tests that run only with credentials, never in <code>mvn -o test</code>; throwaway bucket/queues, clean up.</li>
+</ul>
+
+<h2>Open — assignment requirements</h2>
+<ul class="plain">
+  <li><strong>Manager is serial.</strong> One receive loop handles <code>NEW_TASK</code> inline (S3 read, fan-out, summary write). The PDF requires simultaneous processing of client requests: admit in the loop, submit the per-client work to a bounded executor, add an overlapping-clients test.</li>
+  <li><strong>Terminate is not a drain.</strong> <code>handleTerminate</code> clears <code>running</code>, sends <code>TERMINATE</code> to admitted clients and deletes the done-OCR queue; it does not wait for outstanding work, terminate the workers, or terminate its own instance. The PDF requires all four, with a bounded wait and forced stop as fallback.</li>
+  <li><strong>No persistence or retry model.</strong> <code>clientTasks</code> is in memory only; a restarted manager loses every admitted client, and a client never times out on a dead manager. Minimum: a per-client S3 checkpoint plus a client-side timeout/retry, keeping <code>NEW_TASK</code> idempotent.</li>
+  <li><strong>S3 lifecycle incomplete.</strong> Prefix and public-read ACL exist, but the manager does not upload, nothing deletes the prefix or the <code>manager_queue</code>/<code>worker_queue</code>, and nobody verifies the bucket and queues are empty afterwards.</li>
+  <li><strong>Worker count is untested.</strong> <code>ensureWorkers</code> uses the outstanding URL count instead of the SQS depth (equivalent here — document it), applies <code>m - k</code> and the cap, but <code>workersNeeded</code> has no unit test and the 19-instance cap is wrong.</li>
+  <li><strong>README absent</strong> (mandatory): names/ids, run instructions, design explanation, instance type/AMI, elapsed time and the <code>n</code> used, queue topology and the four message types, security notes.</li>
+  <li><strong>Submission not prepared:</strong> zip the sources/class files (without downloaded libraries) plus the output of a run on the sample input.</li>
+  <li><strong>SDK version deviates:</strong> BOM <code>2.18.16</code> vs the assignment's <code>2.57.0</code>; bump it or document the deviation in the README.</li>
+  <li><strong>Verified-run checks:</strong> 19 instances maximum and "all workers busy" with more tasks than one worker can take; confirm the AMI has <code>java</code> and <code>aws</code> (both boot scripts depend on them) and that the manager/worker instances really stop.</li>
+  <li><strong>Dead code:</strong> <code>AWS.chooseFreeManager</code> has no caller, and the sort in <code>freeManagers()</code> is unused (the client only tests emptiness).</li>
+</ul>
+
+<footer>
+  Markdown source: <code>docs/superpowers/plans/2026-11-18-open-items-and-todos.md</code>
+</footer>
+</main>
+</body>
+</html>
