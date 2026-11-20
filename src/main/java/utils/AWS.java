@@ -171,12 +171,52 @@ public class AWS {
         }
     }
 
+    /**
+     * Number of live workers (running or pending). "Live" is stricter than "running" so a
+     * worker that is still booting counts against the cap too.
+     */
+    public int runningWorkerCount() {
+        return countLiveInstances("worker");
+    }
+
+    /** Number of live manager and worker instances, the manager included. */
+    public int runningInstanceCount() {
+        return countLiveInstances("manager") + countLiveInstances("worker");
+    }
+
+    private int countLiveInstances(String tagName) {
+        int count = 0;
+        String nextToken = null;
+        try {
+            while (true) {
+                DescribeInstancesRequest request = DescribeInstancesRequest.builder()
+                        .filters(
+                                Filter.builder().name("tag:Name").values(tagName).build(),
+                                Filter.builder().name("instance-state-name")
+                                        .values("running", "pending").build())
+                        .nextToken(nextToken)
+                        .build();
+                DescribeInstancesResponse response = ec2.describeInstances(request);
+                for (Reservation reservation : response.reservations()) {
+                    count += reservation.instances().size();
+                }
+                nextToken = response.nextToken();
+                if (nextToken == null) {
+                    break;
+                }
+            }
+        } catch (RuntimeException e) {
+            throw new IllegalStateException("Could not count live " + tagName + " instances", e);
+        }
+        return count;
+    }
+
     /** Lists running managers with a usable {@code free} tag, most free first. */
     public List<ManagerSlot> freeManagers() {
         List<ManagerSlot> managers = new ArrayList<>();
         String nextToken = null;
         try {
-            do {
+            while (true) {
                 DescribeInstancesRequest request = DescribeInstancesRequest.builder()
                         .filters(
                                 Filter.builder().name("tag:Name").values("manager").build(),
@@ -198,7 +238,10 @@ public class AWS {
                     }
                 }
                 nextToken = response.nextToken();
-            } while (nextToken != null);
+                if (nextToken == null) {
+                    break;
+                }
+            }
         } catch (RuntimeException e) {
             throw new IllegalStateException("Could not list running managers", e);
         }

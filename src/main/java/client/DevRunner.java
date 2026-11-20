@@ -4,6 +4,8 @@ import server.Manager;
 import server.Worker;
 import utils.Queues;
 
+import java.util.UUID;
+
 /**
  * Dev entry point: one manager and two workers in this JVM, then the real client flow.
  *
@@ -35,7 +37,7 @@ public final class DevRunner {
         // Same arguments as App.main: honour the grader's inputs instead of the defaults.
         int managerClientsN = Integer.parseInt(args[2]);
         int workerFilesN = Integer.parseInt(args[3]);
-        Manager manager = new Manager(managerClientsN, workerFilesN);
+        Manager manager = new Manager(UUID.randomUUID().toString(), managerClientsN, workerFilesN);
         Thread managerThread = new Thread(manager, "manager");
         managerThread.start();
 
