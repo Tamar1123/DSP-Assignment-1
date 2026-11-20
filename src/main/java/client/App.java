@@ -79,7 +79,7 @@ public class App {
             if (!Queues.isDev()) {
                 localSummaryPath = Files.createTempFile("ocr-summary-", ".txt");
                 deleteTempSummary = true;
-                downloadFileFromS3(aws.getS3(), aws.bucketName, summaryLocation, outputFileName);
+                downloadFileFromS3(aws.getS3(), aws.bucketName, summaryLocation, localSummaryPath.toString());
             }
             else {
                 localSummaryPath = Paths.get(summaryLocation);

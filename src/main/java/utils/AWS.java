@@ -138,10 +138,6 @@ public class AWS {
         return FreeSlotTags.freeSlotsOf(tags);
     }
 
-    public static ManagerSlot chooseFreeManager(List<ManagerSlot> slots) {
-        return (ManagerSlot) FreeSlotTags.chooseFreeManager(slots);
-    }
-
     /**
      * Writes the manager's current free-slot count. Tags are a hint without
      * compare-and-set, so this is best effort and never fails the caller.
