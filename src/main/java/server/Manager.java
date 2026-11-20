@@ -35,7 +35,7 @@ public class Manager implements Runnable {
 
     private static final String WORKER_TAG = "worker";
     private static final String WORKER_JAR_KEY = AWS.S3_PREFIX + "Worker.jar";
-    private static final String WORKER_JAR_PATH = "/home/ec2-user/" + WORKER_JAR_KEY;
+    private static final String WORKER_JAR_PATH = "/home/ec2-user/Worker.jar";
 
     private final String managerID;
     private final Queue managerQueue;
