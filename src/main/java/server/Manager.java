@@ -30,11 +30,22 @@ public class Manager implements Runnable {
     private static final int RECEIVE_MAX = 10;
     private static final int RECEIVE_WAIT_SECONDS = 1;
 
+    /** Maximum EC2 instances (manager plus workers) the system may run. */
+    static final int MAX_INSTANCES = 20;
+
+    private static final String WORKER_TAG = "worker";
+    private static final String WORKER_JAR_KEY = "Worker.jar";
+    private static final String WORKER_JAR_PATH = "/home/ec2-user/" + WORKER_JAR_KEY;
+
     private final String managerID;
     private final Queue managerQueue;
     private final Queue workerQueue;
     private final Queue doneOcrQueue;
-    private int maxClients = 10; //default value, will be overwritten by the local App in contruction.
+
+    /** manager-clients-n: maximum clients this manager serves at once. */
+    private final int maxClients;
+    /** worker-files-n: target number of input files per worker. */
+    private final int workerFilesN;
 
     /** One entry per admitted client (one input file each), keyed by localAppID. Its size is the load. */
     private final Map<String, ClientTask> clientTasks = new ConcurrentHashMap<String, ClientTask>();
@@ -43,24 +54,28 @@ public class Manager implements Runnable {
 
     private volatile boolean running = true;
 
-    public Manager() {
-        this(UUID.randomUUID().toString());
+    /** Test-only: gives a test a deterministic manager id, and therefore queue names. */
+    public Manager(String managerID) {
+        this(managerID, 10, 1);
     }
 
-    public Manager(String managerID) {
+    /**
+     * @param maxClients   manager-clients-n, the maximum number of clients this manager admits
+     * @param tasksPerWorker worker-files-n, the target number of input files per worker
+     */
+    public Manager(String managerID, int maxClients, int tasksPerWorker) {
+        if (maxClients < 1) {
+            throw new IllegalArgumentException("manager-clients-n must be at least 1, got " + maxClients);
+        }
+        if (tasksPerWorker < 1) {
+            throw new IllegalArgumentException("worker-files-n must be at least 1, got " + tasksPerWorker);
+        }
         this.managerID = managerID;
+        this.maxClients = maxClients;
+        this.workerFilesN = tasksPerWorker;
         this.managerQueue = Queues.get(Queues.managerQueueName());
         this.workerQueue = Queues.get(Queues.workerQueueName());
         this.doneOcrQueue = Queues.get(Queues.doneOcrQueueName(managerID));
-    }
-
-    public Manager(int maxClients, int tasksPerWorker) {
-        this(UUID.randomUUID().toString(), maxClients, tasksPerWorker);
-    }
-
-    public Manager(String managerID, int maxClients, int tasksPerWorker) {
-        this(managerID);
-        this.maxClients = maxClients;
     }
 
     public String getManagerID() {
@@ -108,18 +123,26 @@ public class Manager implements Runnable {
     }
 
 
+    /**
+     * Starts the manager. The launch arguments are the two values the client knows:
+     * {@code args[0] = manager-clients-n}, {@code args[1] = worker-files-n}.
+     */
     public static void main(String[] args) {
         Queues.setDev(false);
-        int workerFilesN = 1;
-        if (args.length >= 1) {
-            try {
-                workerFilesN = Integer.parseInt(args[0]);
-            } catch (NumberFormatException e) {
-                System.err.println("[MANAGER] Invalid worker-files-n argument, defaulting to 1");
-            }
+        int managerClientsN;
+        int workerFilesN;
+        try {
+            managerClientsN = parseArg(args, 0, "manager-clients-n", 10);
+            workerFilesN = parseArg(args, 1, "worker-files-n", 1);
+        } catch (IllegalArgumentException e) {
+            System.err.println("[MANAGER] " + e.getMessage());
+            System.err.println("[MANAGER] Usage: java -jar Manager.jar [manager-clients-n] [worker-files-n]");
+            System.exit(2);
+            return;
         }
-        System.out.println("[MANAGER] Starting Manager node in AWS SQS mode (workerFilesN=" + workerFilesN + ")...");
-        Manager manager = new Manager();
+        System.out.println("[MANAGER] Starting Manager node in AWS SQS mode (managerClientsN="
+                + managerClientsN + ", workerFilesN=" + workerFilesN + ")...");
+        Manager manager = new Manager(UUID.randomUUID().toString(), managerClientsN, workerFilesN);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("[MANAGER] Shutting down...");
             manager.shutdown();
@@ -127,6 +150,34 @@ public class Manager implements Runnable {
 
         manager.run();
         System.out.println("[MANAGER] Manager stopped.");
+    }
+
+    /** Parses a positive integer argument, falling back to {@code defaultValue} when absent. */
+    static int parseArg(String[] args, int index, String name, int defaultValue) {
+        if (args == null || args.length <= index) {
+            return defaultValue;
+        }
+        int value;
+        try {
+            value = Integer.parseInt(args[index].trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(name + " must be an integer, got '" + args[index] + "'", e);
+        }
+        if (value < 1) {
+            throw new IllegalArgumentException(name + " must be at least 1, got " + value);
+        }
+        return value;
+    }
+
+    /** workers needed for {@code urlCount} images at {@code workerFilesN} (that many per worker. */
+    static int workersNeeded(int urlCount, int workerFilesN) {
+        if (workerFilesN < 1) {
+            throw new IllegalArgumentException("worker-files-n must be at least 1, got " + workerFilesN);
+        }
+        if (urlCount <= 0) {
+            return 0;
+        }
+        return (urlCount - 1) / workerFilesN + 1;
     }
 
     @Override

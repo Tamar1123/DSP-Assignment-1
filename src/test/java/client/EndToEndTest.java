@@ -42,7 +42,7 @@ public class EndToEndTest {
 
     @Test
     public void twoAppsOneManagerTwoWorkers() throws Exception {
-        Manager manager = new Manager();
+        Manager manager = new Manager("manager-e2e", 10, 1);
         Thread managerThread = new Thread(manager, "manager");
         managerThread.start();
 
