@@ -258,10 +258,68 @@ public class Manager implements Runnable {
             updateFreeSlots();
             throw e;
         }
+        ensureWorkers(totalOutstanding());
         logDebug("admitted client " + localAppID + " with " + task.outstanding + " images");
         if (task.outstanding == 0) {
             finish(task);
         }
+    }
+
+    /**
+     * Boots the missing workers for the images currently outstanding across this manager's
+     * clients: {@code ceil(outstanding / worker-files-n)} workers should exist, so start the
+     * difference above the live workers. The live worker and total instance counts are read
+     * from EC2, and the launch is capped so the whole system never exceeds 20 instances
+     * (the manager included). A no-op under the in-memory transport.
+     */
+    private void ensureWorkers(int outstanding) {
+        if (Queues.isDev() || outstanding <= 0) {
+            return;
+        }
+        try {
+            AWS aws = AWS.getInstance();
+            int liveWorkers = aws.runningWorkerCount();
+            int liveInstances = aws.runningInstanceCount();
+            int needed = workersNeeded(outstanding, workerFilesN);
+            int toStart = needed - liveWorkers;
+            if (toStart <= 0) {
+                return;
+            }
+            int allowed = MAX_INSTANCES - liveInstances;
+            if (toStart > allowed) {
+                toStart = allowed;
+            }
+            if (toStart <= 0) {
+                logDebug("instance cap reached (" + liveInstances + "/" + MAX_INSTANCES
+                        + " live, " + liveWorkers + " workers)");
+                return;
+            }
+            launchWorkers(toStart);
+            logDebug("launched " + toStart + " worker(s): " + outstanding + " image(s), "
+                    + workerFilesN + " per worker, " + liveWorkers + " already live");
+        } catch (Exception e) {
+            // Worker bootstrap is best effort: the manager must keep serving clients.
+            System.err.println("[MANAGER] could not launch workers: " + e.getMessage());
+        }
+    }
+
+    /** Starts worker instances that download the uploaded worker jar and run the worker. */
+    private void launchWorkers(int count) {
+        AWS aws = AWS.getInstance();
+        String script = "#!/bin/bash\n"
+                + "aws s3 cp s3://" + aws.bucketName + "/" + WORKER_JAR_KEY + " " + WORKER_JAR_PATH + "\n"
+                + "java -jar " + WORKER_JAR_PATH + " > /home/ec2-user/worker.log 2>&1\n";
+        aws.createEC2(script, WORKER_TAG, count);
+    }
+
+    private int totalOutstanding() {
+        int total = 0;
+        for (ClientTask task : clientTasks.values()) {
+            if (task.outstanding > 0) {
+                total += task.outstanding;
+            }
+        }
+        return total;
     }
 
     private void handleDoneOcr(Message msg) throws IOException {
