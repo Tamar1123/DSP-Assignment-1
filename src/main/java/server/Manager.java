@@ -324,7 +324,9 @@ public class Manager implements Runnable {
         AWS aws = AWS.getInstance();
         String script = "#!/bin/bash\n"
                 + "aws s3 cp s3://" + aws.bucketName + "/" + WORKER_JAR_KEY + " " + WORKER_JAR_PATH + "\n"
-                + "java -jar " + WORKER_JAR_PATH + " > /home/ec2-user/worker.log 2>&1\n";
+                + "JAVA_BIN=$(ls /usr/lib/jvm/*1.8*/bin/java 2>/dev/null | head -n 1)\n"
+                + "[ -z \"$JAVA_BIN\" ] && JAVA_BIN=$(command -v java)\n"
+                + "\"$JAVA_BIN\" -jar " + WORKER_JAR_PATH + " > /home/ec2-user/worker.log 2>&1 || { cat /home/ec2-user/worker.log > /dev/console; exit 1; }\n";
         aws.createEC2(script, WORKER_TAG, count);
     }
 

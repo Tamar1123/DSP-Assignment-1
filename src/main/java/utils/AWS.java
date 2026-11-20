@@ -1,5 +1,6 @@
 package utils;
 
+import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.ec2.Ec2Client;
 import software.amazon.awssdk.services.ec2.model.Tag;
@@ -29,9 +30,9 @@ public class AWS {
     public static Region region2 = Region.US_EAST_1;
 
     private AWS() {
-        s3 = S3Client.builder().region(region1).build();
-        sqs = SqsClient.builder().region(region1).build();
-        ec2 = Ec2Client.builder().region(region2).build();
+        s3 = S3Client.builder().region(region1).httpClientBuilder(UrlConnectionHttpClient.builder()).build();
+        sqs = SqsClient.builder().region(region1).httpClientBuilder(UrlConnectionHttpClient.builder()).build();
+        ec2 = Ec2Client.builder().region(region2).httpClientBuilder(UrlConnectionHttpClient.builder()).build();
     }
 
     public static AWS getInstance() {

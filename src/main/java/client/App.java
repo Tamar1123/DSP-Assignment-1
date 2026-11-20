@@ -219,7 +219,11 @@ public class App {
                 "TOKEN=$(curl -X PUT \"http://169.254.169.254/latest/api/token\" -H \"X-aws-ec2-metadata-token-ttl-seconds: 21600\" -s)\n" +
                 "INSTANCE_ID=$(curl -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/instance-id -s)\n" +
                 "aws s3 cp s3://" + aws.bucketName + "/" + MANAGER_JAR_S3_KEY + " /home/ec2-user/Manager.jar\n" +
-                "java -jar /home/ec2-user/Manager.jar " + managerClientsN + " " + workerFilesN + " \"$INSTANCE_ID\" > /home/ec2-user/manager.log 2>&1\n";
+                "JAVA_BIN=$(ls /usr/lib/jvm/*1.8*/bin/java 2>/dev/null | head -n 1)\n" +
+                "[ -z \"$JAVA_BIN\" ] && JAVA_BIN=$(command -v java)\n" +
+                "echo \"[BOOTSTRAP] Using JAVA_BIN=$JAVA_BIN\" > /dev/console\n" +
+                "\"$JAVA_BIN\" -version > /dev/console 2>&1\n" +
+                "\"$JAVA_BIN\" -jar /home/ec2-user/Manager.jar " + managerClientsN + " " + workerFilesN + " \"$INSTANCE_ID\" > /home/ec2-user/manager.log 2>&1 || { cat /home/ec2-user/manager.log > /dev/console; exit 1; }\n";
         aws.createEC2(ec2Script, "manager", 1, freeSlots);
     }
 
@@ -227,7 +231,6 @@ public class App {
         PutObjectRequest putObjectRequest = PutObjectRequest.builder()
                 .bucket(bucketName)
                 .key(s3Key)
-                .acl(ObjectCannedACL.PUBLIC_READ)
                 .build();
         s3.putObject(putObjectRequest, RequestBody.fromFile(Paths.get(localPath)));
         System.out.println("[INFO] Uploaded " + s3Key + " to S3.");
@@ -238,7 +241,6 @@ public class App {
         PutObjectRequest putObjectRequest = PutObjectRequest.builder()
                 .bucket(bucketName)
                 .key(s3Key)
-                .acl(ObjectCannedACL.PUBLIC_READ)
                 .build();
         s3.putObject(putObjectRequest, RequestBody.fromFile(Paths.get(localFilePath)));
         System.out.println("File uploaded successfully to S3: " + s3Key);
