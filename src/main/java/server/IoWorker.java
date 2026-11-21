@@ -4,21 +4,15 @@ import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * The manager's single blocking-work thread.
- *
- * <p>Jobs are ordered by priority: finishes run before fan-outs, and jobs of the same priority
- * keep submission order. A fan-out may call {@link #runPendingFinishes()} between batches so a
- * completed client is never held up behind another client's fan-out.
- *
- * <p>Production uses {@link #start()}; tests use {@link #runOne()}, {@link #runAll()} and
- * {@link #runPendingFinishes()} on the calling thread for deterministic interleaving.
+ * One thread for all blocking manager work. Finishes run before fan-outs; same-priority jobs
+ * keep submission order. Tests can run jobs on the calling thread instead of starting it.
  */
 final class IoWorker {
     static final int FINISH = 0;
     static final int FAN_OUT = 1;
     private static final int STOP_PRIORITY = Integer.MAX_VALUE;
 
-    /** A unit of blocking work. */
+    /** A blocking unit of work. */
     abstract static class Job implements Runnable, Comparable<Job> {
         private static final AtomicLong SEQUENCE = new AtomicLong();
 
@@ -57,7 +51,7 @@ final class IoWorker {
         jobs.add(job);
     }
 
-    /** Starts the single worker thread. */
+    /** Starts the worker thread. */
     void start() {
         Thread thread = new Thread(new Runnable() {
             @Override
@@ -69,12 +63,12 @@ final class IoWorker {
         thread.start();
     }
 
-    /** Stops after every queued job has run. */
+    /** Stops after all queued jobs run. */
     void stopAfterDrain() {
         jobs.add(STOP);
     }
 
-    /** Runs one queued job; returns false when the queue is empty or stopped. Test seam. */
+    /** Test seam: runs one job; false when empty or stopped. */
     boolean runOne() {
         Job job = jobs.poll();
         if (job == null || job == STOP) {
@@ -84,7 +78,7 @@ final class IoWorker {
         return true;
     }
 
-    /** Runs every queued job, finishes before fan-outs. Test seam. */
+    /** Test seam: runs every queued job, finishes first. */
     void runAll() {
         Job job;
         while ((job = jobs.poll()) != null) {
@@ -95,7 +89,7 @@ final class IoWorker {
         }
     }
 
-    /** Runs queued finish jobs now; a fan-out calls this between batches. */
+    /** Runs queued finishes now; fan-out calls this between batches. */
     void runPendingFinishes() {
         Job job;
         while ((job = jobs.peek()) != null && job != STOP && job.priority() == FINISH) {
@@ -125,7 +119,7 @@ final class IoWorker {
         try {
             job.run();
         } catch (Exception e) {
-            // One bad job must not kill the worker; the job itself reports client failures.
+            // One bad job must not kill the worker; the job reports client failures.
             System.err.println("[MANAGER] io job failed: " + e.getMessage());
         }
     }

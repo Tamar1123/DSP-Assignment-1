@@ -19,19 +19,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * The manager: routes client work to the shared worker queue and answers each client once
- * all of its images have been OCRed.
+ * Routes client work to workers and answers each client once its images are OCRed.
  *
- * The manager runs exactly two threads. The main thread is the {@link #routerTick() Router}:
- * it only receives messages, updates shared state and enqueues work — it never touches S3 or
- * EC2. The single {@link IoWorker} thread does every blocking call: reading
- * input files, sending image tasks, bootstrapping workers, writing summaries and answering
- * clients. Jobs sit in one priority queue in which finishes outrank fan-outs, so a completed
- * client is never held up by another client's fan-out.
- *
- * The manager never OCRs and never downloads images. It owns one request queue (shared by
- * all clients), one shared worker queue, and one {@code done_ocr_<managerID>} queue that its
- * workers report to.
+ * Two threads: the main Router receives and admits; one IoWorker does all blocking calls.
+ * The manager never OCRs or downloads images.
  */
 public class Manager implements Runnable {
     private static final int RECEIVE_MAX = 10;
@@ -56,25 +47,22 @@ public class Manager implements Runnable {
     /** worker-files-n: target number of input files per worker. */
     private final int workerFilesN;
 
-    /** One entry per admitted client (one input file each), keyed by localAppID. Its size is the load. */
+    /** Admitted clients keyed by localAppID; its size is the load. */
     private final Map<String, ClientTask> clientTasks = new ConcurrentHashMap<String, ClientTask>();
-    private final AtomicInteger servedClients = new AtomicInteger(); //cumulative, incremented at finish.
-    private final AtomicInteger rejectedClients = new AtomicInteger(); //cumulative, busy replies sent.
+    private final AtomicInteger servedClients = new AtomicInteger(); // finished clients
+    private final AtomicInteger rejectedClients = new AtomicInteger(); // busy replies
 
     /** Runs every blocking job, finishes before fan-outs, on one thread. */
     private final IoWorker ioWorker;
 
     private volatile boolean running = true;
 
-    /** Test-only: gives a test a deterministic manager id, and therefore queue names. */
+    /** Test helper: fixed manager id, and therefore fixed queue names. */
     public Manager(String managerID) {
         this(managerID, 10, 1);
     }
 
-    /**
-     * @param maxClients   manager-clients-n, the maximum number of clients this manager admits
-     * @param tasksPerWorker worker-files-n, the target number of input files per worker
-     */
+    /** maxClients is manager-clients-n; tasksPerWorker is worker-files-n. */
     public Manager(String managerID, int maxClients, int tasksPerWorker) {
         if (maxClients < 1) {
             throw new IllegalArgumentException("manager-clients-n must be at least 1, got " + maxClients);
@@ -117,14 +105,8 @@ public class Manager implements Runnable {
     }
 
     /**
-     * One router tick. This is the test seam; {@link #run()} calls it in a loop until
-     * {@link #shutdown()} or a terminate message stops the manager.
-     *
-     * First the done-OCR queue is drained without waiting, so results are recorded and finish
-     * jobs are queued even while the manager is full. Then the request queue is polled —
-     * always, full or not: a duplicate is ignored, a request without a free slot is answered
-     * with a busy error DONE_TASK and deleted, and only a real free slot admits a client.
-     * Admission never performs S3 or EC2 I/O; the blocking part is submitted to the IoWorker.
+     * One router tick. Drains done-OCR without waiting, then polls requests. A full manager
+     * answers busy; duplicates are ignored. No S3 or EC2 call here.
      */
     public void routerTick() {
         for (Received received : doneOcrQueue.receive(RECEIVE_MAX, 0)) {
@@ -138,45 +120,28 @@ public class Manager implements Runnable {
         }
     }
 
-    /**
-     * The synchronous test seam: one router tick followed by running every pending IoWorker
-     * job inline (finishes before fan-outs). Existing tests drive the manager with this and
-     * stay deterministic; the concurrency tests use {@link #routerTick()} and
-     * {@link #runOnePendingJob()} to interleave the two roles themselves.
-     */
+    /** Test seam: one router tick, then every pending IoWorker job inline. */
     public void startOnce() {
         routerTick();
         runPendingIo();
     }
 
-    /** Runs every pending IoWorker job inline, finishes before fan-outs. Test seam. */
+    /** Test seam: runs every pending IoWorker job inline, finishes first. */
     public void runPendingIo() {
         ioWorker.runAll();
     }
 
-    /**
-     * Runs one pending IoWorker job inline (a finish if one is queued, else a fan-out).
-     * Test seam: a test thread calling this acts as the IoWorker while the test thread
-     * drives the router. Returns true when a job ran.
-     */
+    /** Test seam: runs one pending IoWorker job; false when none is queued. */
     public boolean runOnePendingJob() {
         return ioWorker.runOne();
     }
 
-    /**
-     * Runs every queued finish now. The fan-out calls this between batches so a client whose
-     * last image has been OCRed is never kept waiting behind the rest of another client's
-     * fan-out; tests call it directly to prove that ordering.
-     */
+    /** Runs queued finishes now; fan-out calls this between batches. */
     public void runPendingFinishes() {
         ioWorker.runPendingFinishes();
     }
 
-    /**
-     * Starts the manager: the single IoWorker thread plus the Router loop on this thread.
-     * The launch arguments are the two values the client knows:
-     * {@code args[0] = manager-clients-n}, {@code args[1] = worker-files-n}.
-     */
+    /** Starts the IoWorker plus the Router loop. args: manager-clients-n, worker-files-n. */
     public static void main(String[] args) {
         Queues.setDev(false);
         int managerClientsN;
@@ -203,7 +168,7 @@ public class Manager implements Runnable {
         System.out.println("[MANAGER] Manager stopped.");
     }
 
-    /** Parses a positive integer argument, falling back to {@code defaultValue} when absent. */
+    /** Parses a positive integer, or returns defaultValue when absent. */
     static int parseArg(String[] args, int index, String name, int defaultValue) {
         if (args == null || args.length <= index) {
             return defaultValue;
@@ -220,7 +185,7 @@ public class Manager implements Runnable {
         return value;
     }
 
-    /** workers needed for {@code urlCount} images at {@code workerFilesN} (that many per worker. */
+    /** ceil(urlCount / workerFilesN); zero when there are no URLs. */
     static int workersNeeded(int urlCount, int workerFilesN) {
         if (workerFilesN < 1) {
             throw new IllegalArgumentException("worker-files-n must be at least 1, got " + workerFilesN);
@@ -297,12 +262,7 @@ public class Manager implements Runnable {
         }
     }
 
-    /**
-     * Admission (Router only). A duplicate for an admitted client is ignored; a request that
-     * arrives when every slot is taken is answered busy and deleted; otherwise the task is
-     * stored and its input read, image-task sends and worker bootstrap are submitted to the
-     * IoWorker as one fan-out job. No S3 or EC2 call happens on this path.
-     */
+    /** Admits a client and submits its fan-out to the IoWorker. No S3 or EC2 call here. */
     private void handleNewTask(Message msg) {
         String localAppID = msg.getLocalAppID();
         if (clientTasks.containsKey(localAppID)) {
@@ -323,16 +283,15 @@ public class Manager implements Runnable {
         logDebug("admitted client " + localAppID);
     }
 
-    /** Records one OCR result (first text wins) and queues the finish at zero outstanding. */
+    /** Records a result and queues finish when the last one arrives. */
     private void handleDoneOcr(Message msg) {
         ClientTask task = clientTasks.get(msg.getLocalAppID());
         if (task == null) {
             logDebug("ignoring done OCR for unknown client " + msg.getLocalAppID());
             return;
         }
-        // Keep the first text for a URL, but count every result. Duplicate input URLs are
-        // legitimate separate tasks; without a per-task id in the wire format, an SQS
-        // redelivery cannot be told apart from a second identical-URL task.
+        // First text wins, but count every result: duplicate URLs are separate tasks, and
+        // an SQS redelivery cannot be told apart from a second identical-URL task.
         task.texts.putIfAbsent(msg.getImageURL(), msg.getIdentifiedText());
         if (task.outstanding.decrementAndGet() <= 0) {
             ioWorker.submit(new FinishJob(task));
@@ -351,13 +310,7 @@ public class Manager implements Runnable {
         deleteDoneOcrQueueIfAws();
     }
 
-    /**
-     * Boots the missing workers for the images currently outstanding across this manager's
-     * clients: {@code ceil(outstanding / worker-files-n)} workers should exist, so start the
-     * difference above the live workers. The live worker and total instance counts are read
-     * from EC2, and the launch is capped so the whole system never exceeds 20 instances
-     * (the manager included). A no-op under the in-memory transport.
-     */
+    /** Starts the workers needed for the outstanding images, capped by MAX_INSTANCES. */
     private void ensureWorkers(int outstanding) {
         if (Queues.isDev() || outstanding <= 0) {
             return;
@@ -410,10 +363,7 @@ public class Manager implements Runnable {
         return total;
     }
 
-    /**
-     * Removes a failed task, frees its slot and answers the client with an error — exactly
-     * once, whatever failed. Runs on the IoWorker only: removals and tag writes happen there.
-     */
+    /** Fails a task once: error reply, remove it, free the slot. IoWorker only. */
     private void failTask(ClientTask task, String description) {
         if (!task.done.compareAndSet(false, true)) {
             return; // already answered
@@ -431,11 +381,7 @@ public class Manager implements Runnable {
         updateFreeSlots();
     }
 
-    /**
-     * Publishes this manager's free slots as the EC2 {@code free} tag so clients can pick a
-     * manager with room. The tag is only a hint: it is written by this manager alone and may
-     * lag behind, so a client can still get a busy reply. A no-op under the in-memory transport.
-     */
+    /** Publishes free slots as the EC2 free tag; a hint that may lag. IoWorker only. */
     private void updateFreeSlots() {
         if (Queues.isDev()) {
             return;
@@ -507,12 +453,7 @@ public class Manager implements Runnable {
         return urls;
     }
 
-    /**
-     * In a real deployment the manager owns {@code done_ocr_<managerID>}; drop it on the way
-     * out. In dev the registry is reset by the tests, so there is nothing to delete.
-     *
-     * Not exercisable offline: this branch only runs with the SQS transport.
-     */
+    /** Deletes the per-manager done-OCR queue in AWS mode; a no-op in dev. */
     private void deleteDoneOcrQueueIfAws() {
         if (Queues.isDev()) {
             return;
@@ -535,12 +476,7 @@ public class Manager implements Runnable {
         }
     }
 
-    /**
-     * Reads the input file once, records the immutable URL list, sends one NEW_IMAGE_TASK per
-     * URL in batches of ten — running pending finishes between batches — and then boots the
-     * workers. An empty input finishes the client at once. A failure here removes the task,
-     * frees the slot and answers the client with an error.
-     */
+    /** Reads the input, sends image tasks in batches, drains finishes between batches. */
     private final class FanOutJob extends IoWorker.Job {
         private final ClientTask task;
 
@@ -578,12 +514,7 @@ public class Manager implements Runnable {
         }
     }
 
-    /**
-     * Answers the client once: writes the summary in input URL order, uploads it, sends
-     * DONE_TASK, removes the task and updates the free-slot tag. A failure still answers the
-     * client (with an error), still frees the slot and still runs only once — the CAS on
-     * {@code done} makes finish idempotent.
-     */
+    /** Answers once: summary, DONE_TASK, remove the task, free the slot. */
     private final class FinishJob extends IoWorker.Job {
         private final ClientTask task;
 
@@ -628,17 +559,17 @@ public class Manager implements Runnable {
         }
     }
 
-    /** Per-client work tracked by the manager while its images are being OCRed. */
+    /** Per-client work while its images are OCRed. */
     static final class ClientTask {
         final String localAppID;
         final String inputFileLocation;
-        /** First text received per URL wins; a duplicate DONE_OCR must not overwrite it. */
+        /** First text per URL wins. */
         final ConcurrentHashMap<String, String> texts = new ConcurrentHashMap<String, String>();
-        /** Image tasks not yet answered; set by the fan-out, decremented by the Router. */
+        /** Image tasks not yet answered. */
         final AtomicInteger outstanding = new AtomicInteger();
-        /** CAS guard so the client is answered exactly once, even across failure paths. */
+        /** Answers the client exactly once. */
         final AtomicBoolean done = new AtomicBoolean(false);
-        /** Immutable URL list in input order; set before the first image task is sent. */
+        /** Input order, set before the first image task is sent. */
         volatile List<String> urls = Collections.emptyList();
 
         ClientTask(String localAppID, String inputFileLocation) {
