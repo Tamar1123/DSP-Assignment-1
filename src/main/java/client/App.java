@@ -13,7 +13,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -102,20 +104,20 @@ public class App {
         String localAppID = UUID.randomUUID().toString();
         String clientQueueName = Queues.clientQueueName(localAppID);
         Queues.create(clientQueueName);
-        Queues.create(Queues.managerQueueName());
         Queue inbox = Queues.get(clientQueueName);
-        Queue managerQueue = Queues.get(Queues.managerQueueName());
         try {
             String fileLocationToSend = inputFileName;
             if (!Queues.isDev()) {
                 fileLocationToSend = uploadFileToS3(aws.getS3(), aws.bucketName, inputFileName, localAppID);
             }
-            log("Client " + localAppID + " reply queue=" + clientQueueName
-                    + " manager queue=" + Queues.managerQueueName());
-            Message done = requestTask(managerQueue, inbox, clientQueueName, localAppID, managerDirectory, fileLocationToSend);
+            log("Client " + localAppID + " reply queue=" + clientQueueName);
+            Message done = requestTask(inbox, clientQueueName, localAppID, managerDirectory, fileLocationToSend);
             if (terminate) {
-                log("Sending TERMINATE to " + Queues.managerQueueName());
-                managerQueue.send(Message.createTerminate(localAppID));
+                // The manager that served us is the one to stop.
+                String managerQueueName = Queues.managerQueueName(done.getManagerID());
+                log("Sending TERMINATE to " + managerQueueName);
+                Queues.create(managerQueueName);
+                Queues.get(managerQueueName).send(Message.createTerminate(localAppID));
                 await(inbox, clientQueueName, Message.MessageType.TERMINATE);
             }
             return done.getOutputFileLocation();
@@ -136,24 +138,30 @@ public class App {
         }
     }
 
-    // Sends NEW_TASK and returns the successful DONE_TASK. Busy reply (error, no location): the
-    // tag was stale, so re-find a manager and resend. Error with a location field: terminal
-    // failure, thrown.
-    static Message requestTask(Queue managerQueue, Queue inbox, String inboxName, String localAppID,
+    // Picks a manager, sends NEW_TASK to its own queue and returns the successful DONE_TASK (its
+    // managerID names the manager that served us). Busy reply (error, no location): that manager
+    // was full, so avoid it, pick or start another, and resend. Error with a location field:
+    // terminal failure, thrown.
+    static Message requestTask(Queue inbox, String inboxName, String localAppID,
                                ManagerDirectory directory, String fileLocationToSend) {
+        Set<String> avoid = new HashSet<String>();
         while (true) {
-            sendNewTask(managerQueue, localAppID, directory, fileLocationToSend);
+            String managerID = sendNewTask(localAppID, directory, fileLocationToSend, avoid);
             Message reply;
-        try {
-            reply = await(inbox, inboxName, Message.MessageType.DONE_TASK, directory);
-        } catch (ManagerLostException e) {
-            if (debug) {
-                System.out.println("[DEBUG] " + e.getMessage() + ", re-ensuring manager and resending " + localAppID);
+            try {
+                reply = await(inbox, inboxName, Message.MessageType.DONE_TASK, directory);
+            } catch (ManagerLostException e) {
+                if (debug) {
+                    System.out.println("[DEBUG] " + e.getMessage() + ", picking another manager for " + localAppID);
+                }
+                avoid.add(managerID);
+                pauseBeforeRetry();
+                continue;
             }
-            pauseBeforeRetry();
-            continue;
-        }
             if (!reply.isError()) {
+                if (reply.getManagerID() == null) {
+                    reply.setManagerID(managerID);
+                }
                 return reply;
             }
             if (reply.getOutputFileLocation() != null) {
@@ -161,7 +169,8 @@ public class App {
                         + reply.getOutputFileLocation());
             }
             if (debug)
-                System.out.println("[DEBUG] Manager busy, retrying " + localAppID);
+                System.out.println("[DEBUG] Manager " + managerID + " busy, retrying " + localAppID);
+            avoid.add(reply.getManagerID() != null ? reply.getManagerID() : managerID);
             pauseBeforeRetry();
         }
     }
@@ -170,15 +179,20 @@ public class App {
         return await(inbox, queueName, expected, null);
     }
 
-    // Makes sure a manager is available, then sends the request.
-    private static void sendNewTask(Queue managerQueue, String localAppID,
-                                    ManagerDirectory directory, String fileLocationToSend) {
-        boolean started = directory.ensureManager(managerClientsN);
+    // Picks (or starts) a manager outside avoid, makes sure its queue exists, sends the request
+    // there and returns the manager id.
+    private static String sendNewTask(String localAppID, ManagerDirectory directory,
+                                      String fileLocationToSend, Set<String> avoid) {
+        boolean[] started = new boolean[1];
+        String managerID = directory.ensureManager(managerClientsN, avoid, started);
         if (debug)
-            System.out.println("[DEBUG] " + (started ? "Started a manager" : "Using a free manager"));
-        log("Sending NEW_TASK (" + fileLocationToSend + ") to " + Queues.managerQueueName());
-        managerQueue.send(Message.createNewTask(fileLocationToSend, localAppID));
+            System.out.println("[DEBUG] " + (started[0] ? "Started a manager " : "Using a free manager ") + managerID);
+        String queueName = Queues.managerQueueName(managerID);
+        Queues.create(queueName);
+        log("Sending NEW_TASK (" + fileLocationToSend + ") to " + queueName);
+        Queues.get(queueName).send(Message.createNewTask(fileLocationToSend, localAppID));
         log("NEW_TASK sent");
+        return managerID;
     }
 
     private static void pauseBeforeRetry() {
@@ -235,7 +249,7 @@ public class App {
 
     // Starts one manager with freeSlots free client slots. The instance downloads the jar
     // uploaded by setup() and runs server.Manager in the background.
-static void createEC2(int freeSlots) {
+static String createEC2(int freeSlots) {
     S3Client s3 = aws.getS3();
     uploadJarToS3(s3, aws.bucketName, MANAGER_JAR_LOCAL_PATH, MANAGER_JAR_S3_KEY);
     uploadJarToS3(s3, aws.bucketName, WORKER_JAR_LOCAL_PATH, WORKER_JAR_S3_KEY);
@@ -256,7 +270,7 @@ static void createEC2(int freeSlots) {
             "\"$JAVA_BIN\" -version > /dev/console 2>&1\n" +
             (debug ? "touch /home/ec2-user/manager.log\n(while true; do aws s3 cp /home/ec2-user/manager.log s3://" + aws.bucketName + "/" + AWS.S3_PREFIX + "logs/manager-$INSTANCE_ID.log --quiet; sleep 5; done) &\n" : "") +
             "\"$JAVA_BIN\" -jar /home/ec2-user/Manager.jar " + managerClientsN + " " + workerFilesN + " \"$INSTANCE_ID\"" + (debug ? " -D" : "") + " > /home/ec2-user/manager.log 2>&1 || { cat /home/ec2-user/manager.log > /dev/console; exit 1; }\n";
-    aws.createEC2(ec2Script, "manager", 1, freeSlots);
+    return aws.createEC2(ec2Script, "manager", 1, freeSlots);
 }
 
     private static void uploadJarToS3(S3Client s3, String bucketName, String localPath, String s3Key) {

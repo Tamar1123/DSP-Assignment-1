@@ -6,7 +6,7 @@ import static org.junit.jupiter.api.Assertions.*;
 public class QueuesTest {
     @Test
     public void fixedNames() {
-        assertEquals("manager_queue", Queues.managerQueueName());
+        assertEquals("manager_i-123", Queues.managerQueueName("i-123"));
         assertEquals("worker_queue", Queues.workerQueueName());
     }
 

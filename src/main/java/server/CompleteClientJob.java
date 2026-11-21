@@ -29,17 +29,17 @@ final class CompleteClientJob extends IoWorker.Job {
             m.logDebug("summary written at " + summaryLocation + "; sending DONE_TASK to "
                     + Queues.clientQueueName(task.localAppID));
             Queues.get(Queues.clientQueueName(task.localAppID))
-                    .send(Message.createDoneTask(summaryLocation, task.localAppID));
+                    .send(Message.createDoneTask(summaryLocation, task.localAppID, m.managerID()));
             m.clients().markServed();
             m.logDebug("finished client " + task.localAppID + " (served " + m.clients().served()
-                    + ", free slots " + (m.clients().freeSlots()) + ")");
+                    + ")");
         } catch (Exception e) {
             // The summary could not be written or sent: tell the client so it does not hang.
             System.err.println("[MANAGER] could not finish client " + task.localAppID
                     + ": " + Manager.describe(e));
             try {
                 Message failed = Message.createDoneTask("Summary failure: " + Manager.describe(e),
-                        task.localAppID);
+                        task.localAppID, m.managerID());
                 failed.setError(true);
                 Queues.get(Queues.clientQueueName(task.localAppID)).send(failed);
             } catch (Exception sendFailure) {

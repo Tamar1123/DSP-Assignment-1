@@ -34,12 +34,12 @@ final class ManagerFinder implements ManagerDirectory {
     }
 
     @Override
-    public void startManager(int freeSlots) {
+    public String startManager(int freeSlots) {
         if (Queues.isDev()) {
-            return;
+            return null;
         }
         // The launch carries the free-slot tag, so other clients see it and don't start another.
         // App owns the boot script: fetch the uploaded Manager jar and run it.
-        App.createEC2(freeSlots);
+        return App.createEC2(freeSlots);
     }
 }

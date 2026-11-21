@@ -61,6 +61,13 @@ public class Message {
     }
 
     
+    // DONE_TASK that also names the manager that answered, so the client can terminate that one.
+    public static Message createDoneTask(String outputFileLocation, String localAppID, String managerID) {
+        Message msg = createDoneTask(outputFileLocation, localAppID);
+        msg.managerID = managerID;
+        return msg;
+    }
+
     public static Message createTerminate(String localAppID) {
         Message msg = new Message();
         msg.type = MessageType.TERMINATE;

@@ -21,7 +21,6 @@ public class Manager implements Runnable {
     private static final int RECEIVE_MAX = 10;
     private static final int RECEIVE_WAIT_SECONDS = 1;
     // Visibility delay for a NEW_TASK a full manager gives back, so it is not busy-looped.
-    private static final int REQUEUE_DELAY_SECONDS = 5;
     // How often run() reconciles the worker set and launches crash replacements.
     private static final long WORKER_RECONCILE_INTERVAL_MILLIS = 10000L;
 
@@ -99,7 +98,7 @@ public class Manager implements Runnable {
         this.ioWorker = new IoWorker("manager-io-worker-" + managerID);
         this.clients = new ClientRegistry(maxClients);
         this.workerFilesN = tasksPerWorker;
-        this.managerQueue = Queues.get(Queues.managerQueueName());
+        this.managerQueue = Queues.get(Queues.managerQueueName(managerID));
         this.workerQueue = Queues.get(Queues.workerQueueName());
         this.doneOcrQueue = Queues.get(Queues.doneOcrQueueName(managerID));
         this.workers = new WorkerOrchestrator(new WorkerOrchestrator.Port() {
@@ -139,7 +138,7 @@ public class Manager implements Runnable {
     public int getRejectedClients() { return clients.rejected(); }
 
     // One router tick: drains done-OCR without waiting, then polls requests. A full manager
-    // requeues the request on manager_queue; duplicates are ignored. No S3 or EC2 call here.
+    // answers busy; duplicates are ignored. No S3 or EC2 call here.
     public void routerTick() {
         List<Received> results = doneOcrQueue.receive(RECEIVE_MAX, 0);
         if (!results.isEmpty()) {
@@ -153,7 +152,7 @@ public class Manager implements Runnable {
         }
         List<Received> requests = managerQueue.receive(RECEIVE_MAX, RECEIVE_WAIT_SECONDS);
         if (!requests.isEmpty()) {
-            logDebug("received " + requests.size() + " message(s) on " + Queues.managerQueueName());
+            logDebug("received " + requests.size() + " message(s) on " + Queues.managerQueueName(managerID));
         }
         for (Received received : requests) {
             handle(received, managerQueue);
@@ -199,6 +198,7 @@ public class Manager implements Runnable {
         System.out.println("[MANAGER] Starting Manager node in AWS SQS mode (managerClientsN="
                 + managerClientsN + ", workerFilesN=" + workerFilesN + ")...");
         String instanceId = (args.length > 2 && !args[2].trim().isEmpty()) ? args[2].trim() : UUID.randomUUID().toString();
+        Queues.create(Queues.managerQueueName(instanceId));
         Manager manager = new Manager(instanceId, managerClientsN, workerFilesN);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("[MANAGER] Shutting down...");
@@ -264,13 +264,12 @@ public class Manager implements Runnable {
             }
             switch (msg.getType()) {
                 case NEW_TASK:
-                    boolean requeue = false;
                     try {
-                        requeue = handleNewTask(msg);
+                        handleNewTask(msg);
                     } catch (Exception e) {
                         System.err.println("[MANAGER] failed to handle NEW_TASK: " + e.getMessage());
                         Message error = Message.createDoneTask(
-                                "Manager error: " + e.getMessage(), msg.getLocalAppID());
+                                "Manager error: " + e.getMessage(), msg.getLocalAppID(), managerID);
                         error.setError(true);
                         try {
                             Queues.get(Queues.clientQueueName(msg.getLocalAppID())).send(error);
@@ -278,21 +277,7 @@ public class Manager implements Runnable {
                             System.err.println("[MANAGER] could not send error reply: " + sendEx.getMessage());
                         }
                     }
-                    if (requeue) {
-                        // A failed release must not fall through to the outer catch: that one
-                        // deletes the request and the client would wait forever. Leave the
-                        // message undeleted instead, so SQS redelivers it after the visibility
-                        // timeout.
-                        try {
-                            source.release(received, REQUEUE_DELAY_SECONDS);
-                        } catch (Exception e) {
-                            System.err.println("[MANAGER] could not requeue client "
-                                    + msg.getLocalAppID() + "; leaving the request for redelivery: "
-                                    + e.getMessage());
-                        }
-                    } else {
-                        source.delete(received);
-                    }
+                    source.delete(received);
                     break;
                 case DONE_OCR:
                     handleDoneOcr(msg);
@@ -314,32 +299,37 @@ public class Manager implements Runnable {
     }
 
     // Admits a client and submits its fan-out to the IoWorker. No S3 or EC2 call here.
-    // Returns true when the request must go back on manager_queue (no free slot): the caller
-    // releases it with a delay. Terminating and duplicate requests are handled here, return false.
-    private boolean handleNewTask(Message msg) {
+    // A full or terminating manager answers with an error DONE_TASK that has no location (the
+    // client's "busy" signal): it re-picks another manager and resends. Duplicates are ignored.
+    private void handleNewTask(Message msg) {
         String localAppID = msg.getLocalAppID();
         if (terminating.get()) {
             clients.markRejected();
             logDebug("terminating: rejecting client " + localAppID);
-            Message rejected = Message.createDoneTask(null, localAppID);
-            rejected.setError(true);
-            Queues.get(Queues.clientQueueName(localAppID)).send(rejected);
-            return false;
+            replyBusy(localAppID);
+            return;
         }
         if (clients.contains(localAppID)) {
             logDebug("ignoring duplicate new task for client " + localAppID);
-            return false;
+            return;
         }
         if (!hasCapacity()) {
             clients.markRejected();
-            logDebug("full: requeueing client " + localAppID + " (" + clients.size() + "/" + clients.maxClients() + ")");
-            return true;
+            logDebug("full: telling client " + localAppID + " to pick another manager ("
+                    + clients.size() + "/" + clients.maxClients() + ")");
+            replyBusy(localAppID);
+            return;
         }
         ClientTask task = new ClientTask(localAppID, msg.getInputFileLocation());
         clients.add(task);
         ioWorker.submit(new SplitInputJob(seams, task));
         logDebug("admitted client " + localAppID);
-        return false;
+    }
+
+    private void replyBusy(String localAppID) {
+        Message busy = Message.createDoneTask(null, localAppID, managerID);
+        busy.setError(true);
+        Queues.get(Queues.clientQueueName(localAppID)).send(busy);
     }
 
     // Records a result and queues finish when the last one arrives.
@@ -382,6 +372,7 @@ public class Manager implements Runnable {
         running = false;
         stopWorkers();
         deleteDoneOcrQueueIfAws();
+        deleteManagerQueueIfAws();
         String requester = terminateRequester;
         if (requester == null) {
             return;
@@ -417,7 +408,7 @@ public class Manager implements Runnable {
         }
         System.err.println("[MANAGER] failing client " + task.localAppID + ": " + description);
         try {
-            Message failed = Message.createDoneTask(description, task.localAppID);
+            Message failed = Message.createDoneTask(description, task.localAppID, managerID);
             failed.setError(true);
             Queues.get(Queues.clientQueueName(task.localAppID)).send(failed);
         } catch (Exception e) {
@@ -489,6 +480,19 @@ public class Manager implements Runnable {
             aws.deleteQueue(aws.createQueue(Queues.doneOcrQueueName(managerID)));
         } catch (Exception e) {
             System.err.println("[MANAGER] could not delete done OCR queue: " + e.getMessage());
+        }
+    }
+
+    // Deletes this manager's inbound queue in AWS mode; a no-op in dev.
+    protected void deleteManagerQueueIfAws() {
+        if (Queues.isDev()) {
+            return;
+        }
+        try {
+            AWS aws = AWS.getInstance();
+            aws.deleteQueue(aws.createQueue(Queues.managerQueueName(managerID)));
+        } catch (Exception e) {
+            System.err.println("[MANAGER] could not delete manager queue: " + e.getMessage());
         }
     }
 

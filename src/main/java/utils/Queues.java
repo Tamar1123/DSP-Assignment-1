@@ -7,7 +7,6 @@ import java.util.concurrent.ConcurrentHashMap;
 // itself. In dev mode the queues live in this JVM (InMemoryQueue); in a real run they are
 // real SQS queues (SqsQueue).
 public final class Queues {
-    public static final String MANAGER_QUEUE = "manager_queue";
     public static final String WORKER_QUEUE = "worker_queue";
 
     // SQS limits queue names to 80 characters.
@@ -29,8 +28,9 @@ public final class Queues {
     private Queues() {
     }
 
-    public static String managerQueueName() {
-        return MANAGER_QUEUE;
+    // Each manager owns one inbound queue; clients send NEW_TASK / TERMINATE to the one they chose.
+    public static String managerQueueName(String managerID) {
+        return sanitize("manager_", managerID);
     }
 
     public static String workerQueueName() {

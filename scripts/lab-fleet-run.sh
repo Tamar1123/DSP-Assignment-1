@@ -290,7 +290,7 @@ fi
 
 # Stale messages would be consumed by the new nodes; purge rather than delete, because a
 # deleted queue name is unavailable for about a minute.
-for q in manager_queue worker_queue; do
+for q in worker_queue $(aws sqs list-queues --queue-name-prefix manager_ --query 'QueueUrls[]' --output text 2>/dev/null | tr '\t' '\n' | sed 's|.*/||'); do
   url=$(aws sqs get-queue-url --queue-name "$q" --query QueueUrl --output text 2>/dev/null || true)
   case "$url" in
     ''|None) ;;
@@ -435,21 +435,23 @@ echo "nodes: $MLIVE manager(s), $((LLIVE - MLIVE)) worker(s), $LLIVE/$CAP instan
 
 if [ "$TERMINATE" = 1 ]; then
   ACKQ=client_lab-fleet
-  MGRQ=$(aws sqs get-queue-url --queue-name manager_queue --query QueueUrl --output text 2>/dev/null || true)
-  if [ -z "$MGRQ" ] || [ "$MGRQ" = None ]; then
-    echo "[terminate] manager_queue not found; skipped"
+  MGRQS=$(aws sqs list-queues --queue-name-prefix manager_ --query 'QueueUrls[]' --output text 2>/dev/null | tr '\t' ' ' || true)
+  if [ -z "$MGRQS" ] || [ "$MGRQS" = None ]; then
+    echo "[terminate] no manager_* queue found; skipped"
   else
     ACKURL=$(aws sqs create-queue --queue-name "$ACKQ" --query QueueUrl --output text)
     BODY='{"type":"TERMINATE","localAppID":"lab-fleet"}'
-    for _ in $(seq 1 "$M"); do
+    N=0
+    for MGRQ in $MGRQS; do
       aws sqs send-message --queue-url "$MGRQ" --message-body "$BODY" >/dev/null
+      N=$((N + 1))
     done
-    echo "[terminate] sent $M TERMINATE message(s), waiting for acks"
+    echo "[terminate] sent TERMINATE to $N manager queue(s), waiting for acks"
     sleep 20
     ACKS=$(aws sqs get-queue-attributes --queue-url "$ACKURL" \
              --attribute-names ApproximateNumberOfMessages \
              --query 'Attributes.ApproximateNumberOfMessages' --output text 2>/dev/null || echo 0)
-    echo "[terminate] acks in $ACKQ: $ACKS/$M (duplicates may reduce this)"
+    echo "[terminate] acks in $ACKQ: $ACKS/$N"
   fi
 fi
 

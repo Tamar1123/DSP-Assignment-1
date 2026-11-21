@@ -45,7 +45,7 @@ public class ManagerTest {
     public void newTaskProducesOneImageTaskPerLine() throws Exception {
         String in = inputFile("http://a", "http://b");
         Manager m = new Manager("mgr-1");
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-1"));
+        Queues.get(Queues.managerQueueName("mgr-1")).send(Message.createNewTask(in, "app-1"));
         m.startOnce();
         List<Received> tasks = Queues.get(Queues.workerQueueName()).receive(10, 1);
         assertEquals(2, tasks.size());
@@ -57,7 +57,7 @@ public class ManagerTest {
     public void emptyInputAnswersImmediately() throws Exception {
         String in = inputFile();
         Manager m = new Manager("mgr-2");
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-2"));
+        Queues.get(Queues.managerQueueName("mgr-2")).send(Message.createNewTask(in, "app-2"));
         m.startOnce();
         List<Received> done = Queues.get(Queues.clientQueueName("app-2")).receive(1, 1);
         assertEquals(1, done.size());
@@ -68,7 +68,7 @@ public class ManagerTest {
     public void duplicateUrlsAreTwoTasks() throws Exception {
         String in = inputFile("http://a", "http://a");
         Manager m = new Manager("mgr-3");
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-3"));
+        Queues.get(Queues.managerQueueName("mgr-3")).send(Message.createNewTask(in, "app-3"));
         m.startOnce();
         assertEquals(2, Queues.get(Queues.workerQueueName()).receive(10, 1).size());
         for (int i = 0; i < 2; i++) {
@@ -95,10 +95,10 @@ public class ManagerTest {
         // app-5 still has one image outstanding: the manager must not stop or ack yet.
         String in = inputFile("http://a");
         Manager m = new Manager("mgr-5");
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-5"));
+        Queues.get(Queues.managerQueueName("mgr-5")).send(Message.createNewTask(in, "app-5"));
         m.startOnce();
 
-        Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-5"));
+        Queues.get(Queues.managerQueueName("mgr-5")).send(Message.createTerminate("app-5"));
         m.startOnce();
         assertTrue(m.isRunning(), "must wait for the outstanding image");
         assertTrue(Queues.get(Queues.clientQueueName("app-5")).receive(10, 1).isEmpty());
@@ -118,7 +118,7 @@ public class ManagerTest {
         // Bug 2: finish() removes the client, so handleTerminate used to find nobody to ack.
         String in = inputFile("http://a");
         Manager m = new Manager("mgr-12");
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-12"));
+        Queues.get(Queues.managerQueueName("mgr-12")).send(Message.createNewTask(in, "app-12"));
         m.startOnce();
         Queues.get(Queues.doneOcrQueueName("mgr-12"))
                 .send(Message.createDoneOCR("http://a", "text", "app-12"));
@@ -126,7 +126,7 @@ public class ManagerTest {
         assertEquals(0, m.getActiveClients());
         assertEquals(1, Queues.get(Queues.clientQueueName("app-12")).receive(10, 1).size());
 
-        Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-12"));
+        Queues.get(Queues.managerQueueName("mgr-12")).send(Message.createTerminate("app-12"));
         m.startOnce();
         List<Received> acks = Queues.get(Queues.clientQueueName("app-12")).receive(10, 1);
         assertEquals(1, acks.size());
@@ -138,12 +138,12 @@ public class ManagerTest {
     public void terminatingManagerRejectsNewAdmission() throws Exception {
         String in = inputFile("http://a");
         Manager m = new Manager("mgr-13");
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-13a"));
+        Queues.get(Queues.managerQueueName("mgr-13")).send(Message.createNewTask(in, "app-13a"));
         m.startOnce();
 
-        Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-13a"));
+        Queues.get(Queues.managerQueueName("mgr-13")).send(Message.createTerminate("app-13a"));
         m.startOnce();
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-13b"));
+        Queues.get(Queues.managerQueueName("mgr-13")).send(Message.createNewTask(in, "app-13b"));
         m.startOnce();
 
         List<Received> rejected = Queues.get(Queues.clientQueueName("app-13b")).receive(1, 1);
@@ -209,7 +209,7 @@ public class ManagerTest {
             }
         };
         m.launchWorkers(1);
-        Queue managerQueue = Queues.get(Queues.managerQueueName());
+        Queue managerQueue = Queues.get(Queues.managerQueueName("mgr-termination"));
         Queues.register(Queues.clientQueueName("app-termination"), new InMemoryQueue());
         Queues.setDev(false);
         try {
@@ -251,7 +251,7 @@ public class ManagerTest {
         mine.launchWorkers(1);
         other.launchWorkers(1);
 
-        Queue managerQueue = Queues.get(Queues.managerQueueName());
+        Queue managerQueue = Queues.get(Queues.managerQueueName("mgr-mine"));
         Queues.register(Queues.clientQueueName("app-only-mine"), new InMemoryQueue());
         Queues.setDev(false);
         try {
@@ -283,7 +283,7 @@ public class ManagerTest {
         };
         m.launchWorkers(1);
 
-        Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-dev-termination"));
+        Queues.get(Queues.managerQueueName("mgr-dev-termination")).send(Message.createTerminate("app-dev-termination"));
         m.startOnce();
 
         assertTrue(terminatedIds.isEmpty(), "dev mode must not reach the AWS operation");
@@ -293,8 +293,8 @@ public class ManagerTest {
     @Test
     public void terminateIsIdempotent() throws Exception {
         Manager m = new Manager("mgr-14");
-        Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-14"));
-        Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-14"));
+        Queues.get(Queues.managerQueueName("mgr-14")).send(Message.createTerminate("app-14"));
+        Queues.get(Queues.managerQueueName("mgr-14")).send(Message.createTerminate("app-14"));
         m.startOnce();
         assertFalse(m.isRunning());
         assertEquals(1, Queues.get(Queues.clientQueueName("app-14")).receive(10, 1).size());
@@ -306,10 +306,21 @@ public class ManagerTest {
         Manager m = new Manager("mgr-6");
         // a poison message: valid JSON, unknown type
         Message poison = Message.createDoneTask("nowhere", "app-6");
-        Queues.get(Queues.managerQueueName()).send(poison);
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-6"));
+        Queues.get(Queues.managerQueueName("mgr-6")).send(poison);
+        Queues.get(Queues.managerQueueName("mgr-6")).send(Message.createNewTask(in, "app-6"));
         m.startOnce();
         assertEquals(1, Queues.get(Queues.workerQueueName()).receive(10, 2).size());
+    }
+
+    // A busy reply: error DONE_TASK, no location, naming the manager that answered.
+    private static void assertBusyReply(String app, String managerID) {
+        List<Received> replies = Queues.get(Queues.clientQueueName(app)).receive(1, 1);
+        assertEquals(1, replies.size(), "a full manager must answer busy");
+        Message busy = replies.get(0).getMessage();
+        assertEquals(Message.MessageType.DONE_TASK, busy.getType());
+        assertTrue(busy.isError());
+        assertNull(busy.getOutputFileLocation());
+        assertEquals(managerID, busy.getManagerID());
     }
 
     @Test
@@ -317,7 +328,7 @@ public class ManagerTest {
         String in = inputFile("http://a");
         Manager m = new Manager("mgr-7", 2, 5);
         for (String app : new String[] {"app-7a", "app-7b", "app-7c"}) {
-            Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, app));
+            Queues.get(Queues.managerQueueName("mgr-7")).send(Message.createNewTask(in, app));
         }
         // All three arrive in one batch: the gate was open when the batch was received.
         m.startOnce();
@@ -325,68 +336,35 @@ public class ManagerTest {
         assertFalse(m.hasCapacity());
         assertEquals(2, Queues.get(Queues.workerQueueName()).receive(10, 1).size());
 
-        // The full manager gives the request back to the shared queue: no client reply.
-        assertTrue(Queues.get(Queues.clientQueueName("app-7c")).receive(1, 1).isEmpty(),
-                "a full manager must not answer the client");
-        List<Received> requeued = Queues.get(Queues.managerQueueName()).receive(10, 1);
-        assertEquals(1, requeued.size());
-        assertEquals(Message.MessageType.NEW_TASK, requeued.get(0).getMessage().getType());
-        assertEquals("app-7c", requeued.get(0).getMessage().getLocalAppID());
+        // The full manager tells the client to pick another manager and keeps nothing queued.
+        assertBusyReply("app-7c", "mgr-7");
+        assertTrue(Queues.get(Queues.managerQueueName("mgr-7")).receive(10, 0).isEmpty());
         assertEquals(1, m.getRejectedClients());
         assertEquals(0, m.getServedClients());
     }
 
     @Test
-    public void fullManagerRequeuesNewTaskAndSendsNoClientReply() throws Exception {
+    public void fullManagerAnswersBusyAndKeepsNothingQueued() throws Exception {
         String in = inputFile("http://a");
         Manager m = new Manager("mgr-8", 1, 5);
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-8a"));
+        Queues.get(Queues.managerQueueName("mgr-8")).send(Message.createNewTask(in, "app-8a"));
         m.startOnce();
         assertFalse(m.hasCapacity());
 
-        // A request without a free slot is released back to manager_queue (for any manager to
-        // admit later), not deleted and not answered with an error.
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-8b"));
+        // A request without a free slot is answered busy and deleted, not requeued.
+        Queues.get(Queues.managerQueueName("mgr-8")).send(Message.createNewTask(in, "app-8b"));
         m.startOnce();
-        assertTrue(Queues.get(Queues.clientQueueName("app-8b")).receive(1, 1).isEmpty(),
-                "a full manager must not answer the client");
-        List<Received> requeued = Queues.get(Queues.managerQueueName()).receive(10, 1);
-        assertEquals(1, requeued.size());
-        assertEquals("app-8b", requeued.get(0).getMessage().getLocalAppID());
-        assertEquals(Message.MessageType.NEW_TASK, requeued.get(0).getMessage().getType());
+        assertBusyReply("app-8b", "mgr-8");
+        assertTrue(Queues.get(Queues.managerQueueName("mgr-8")).receive(10, 0).isEmpty());
         assertEquals(1, m.getRejectedClients());
-        assertEquals(1, m.getActiveClients(), "the requeue must not disturb the admitted client");
-    }
-
-    @Test
-    public void failedRequeueLeavesTheRequestUndeletedAndUnanswered() throws Exception {
-        // A requeue that throws must not reach handle()'s catch, which deletes the message:
-        // deleting it would lose the client request and the client would wait forever.
-        String in = inputFile("http://a");
-        ReleaseFailingQueue managerQueue = new ReleaseFailingQueue();
-        Queues.register(Queues.managerQueueName(), managerQueue);
-        Manager m = new Manager("mgr-14", 1, 5);
-
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-14a"));
-        m.startOnce(); // admits app-14a and fills the only slot
-        assertFalse(m.hasCapacity());
-        managerQueue.deleted.clear(); // that admission legitimately deleted its request
-
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-14b"));
-        m.startOnce(); // full -> release throws -> no delete
-
-        assertTrue(managerQueue.deleted.isEmpty(), "a failed release must not delete the request");
-        assertTrue(Queues.get(Queues.clientQueueName("app-14b")).receive(1, 0).isEmpty(),
-                "the requeued client must not get a reply");
-        assertEquals(1, m.getRejectedClients());
-        assertEquals(1, m.getActiveClients());
+        assertEquals(1, m.getActiveClients(), "the rejection must not disturb the admitted client");
     }
 
     @Test
     public void finishFreesTheSlotForTheNextClient() throws Exception {
         String in = inputFile("http://a");
         Manager m = new Manager("mgr-9", 1, 5);
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-9a"));
+        Queues.get(Queues.managerQueueName("mgr-9")).send(Message.createNewTask(in, "app-9a"));
         m.startOnce();
         assertFalse(m.hasCapacity());
 
@@ -398,7 +376,7 @@ public class ManagerTest {
         assertTrue(m.hasCapacity());
         assertEquals(1, Queues.get(Queues.clientQueueName("app-9a")).receive(1, 1).size());
 
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-9b"));
+        Queues.get(Queues.managerQueueName("mgr-9")).send(Message.createNewTask(in, "app-9b"));
         m.startOnce();
         assertEquals(1, m.getActiveClients());
         assertEquals(2, Queues.get(Queues.workerQueueName()).receive(10, 1).size());
@@ -415,7 +393,7 @@ public class ManagerTest {
                 published.add(free);
             }
         };
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(inputFile("http://a"), "app-free"));
+        Queues.get(Queues.managerQueueName("mgr-free")).send(Message.createNewTask(inputFile("http://a"), "app-free"));
         m.startOnce();
         assertEquals(Arrays.asList(2 - 1), published, "admission must publish maxClients - 1");
     }
@@ -423,7 +401,7 @@ public class ManagerTest {
     @Test
     public void emptyInputFreesItsSlotAtOnce() throws Exception {
         Manager m = new Manager("mgr-10", 1, 5);
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(inputFile(), "app-10"));
+        Queues.get(Queues.managerQueueName("mgr-10")).send(Message.createNewTask(inputFile(), "app-10"));
         m.startOnce();
         assertEquals(1, m.getServedClients());
         assertTrue(m.hasCapacity());
@@ -433,14 +411,14 @@ public class ManagerTest {
     public void duplicateNewTaskIsOneEntryAndNotRequeued() throws Exception {
         String in = inputFile("http://a", "http://b");
         Manager m = new Manager("mgr-11", 1, 5);
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-11"));
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-11"));
+        Queues.get(Queues.managerQueueName("mgr-11")).send(Message.createNewTask(in, "app-11"));
+        Queues.get(Queues.managerQueueName("mgr-11")).send(Message.createNewTask(in, "app-11"));
         m.startOnce();
         assertEquals(1, m.getActiveClients());
         assertEquals(0, m.getRejectedClients());
         assertEquals(2, Queues.get(Queues.workerQueueName()).receive(10, 1).size());
         assertTrue(Queues.get(Queues.clientQueueName("app-11")).receive(1, 1).isEmpty());
-        assertTrue(Queues.get(Queues.managerQueueName()).receive(10, 0).isEmpty(),
+        assertTrue(Queues.get(Queues.managerQueueName("mgr-11")).receive(10, 0).isEmpty(),
                 "the duplicate is deleted, not requeued");
     }
 
@@ -450,7 +428,7 @@ public class ManagerTest {
         // A directory where the summary file must be written makes writeSummary fail.
         assertTrue(new File(in + ".summary").mkdir());
         Manager m = new Manager("mgr-12", 1, 5);
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-12"));
+        Queues.get(Queues.managerQueueName("mgr-12")).send(Message.createNewTask(in, "app-12"));
         m.startOnce();
 
         List<Received> replies = Queues.get(Queues.clientQueueName("app-12")).receive(1, 1);
@@ -484,7 +462,7 @@ public class ManagerTest {
     public void nonDevReadUrlsReadsFromS3() {
         // Pre-register in-memory queues so the manager (and this test) use the in-memory
         // transport even though isDev() is false: only the S3 read/write paths are simulated.
-        Queues.register(Queues.managerQueueName(), new InMemoryQueue());
+        Queues.register(Queues.managerQueueName("mgr-s3"), new InMemoryQueue());
         Queues.register(Queues.workerQueueName(), new InMemoryQueue());
         Queues.register(Queues.doneOcrQueueName("mgr-s3"), new InMemoryQueue());
         Queues.setDev(false);
@@ -508,7 +486,7 @@ public class ManagerTest {
                     // The free-slot tag is also an AWS call in non-dev mode.
                 }
             };
-            Queues.get(Queues.managerQueueName())
+            Queues.get(Queues.managerQueueName("mgr-s3"))
                     .send(Message.createNewTask("assignment1/input-files/app-x-input.txt", "app-1"));
             m.startOnce();
             assertEquals(2, Queues.get(Queues.workerQueueName()).receive(10, 1).size());
@@ -607,7 +585,7 @@ public class ManagerTest {
                 return Arrays.asList("http://a");
             }
         };
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask("slow-A", "app-slow-a"));
+        Queues.get(Queues.managerQueueName("mgr-slow")).send(Message.createNewTask("slow-A", "app-slow-a"));
         m.routerTick(); // admits A; its fan-out is queued, not run
 
         // A separate thread acts as the IoWorker and gets stuck in A's slow input read.
@@ -620,7 +598,7 @@ public class ManagerTest {
         assertTrue(aReading.await(10, TimeUnit.SECONDS), "A's read should have started");
 
         // While A is stuck reading its input, B is admitted, OCRed and answered.
-        Queues.get(Queues.managerQueueName())
+        Queues.get(Queues.managerQueueName("mgr-slow"))
                 .send(Message.createNewTask(inputFile("http://b"), "app-slow-b"));
         m.routerTick(); // admits B
         assertTrue(m.runOnePendingJob(), "B's fan-out should run while A is stuck");
@@ -642,9 +620,9 @@ public class ManagerTest {
     @Test
     public void twoClientsInterleaveAndBothAreAnswered() throws Exception {
         Manager m = new Manager("mgr-inter", 2, 5);
-        Queues.get(Queues.managerQueueName())
+        Queues.get(Queues.managerQueueName("mgr-inter"))
                 .send(Message.createNewTask(inputFile("http://a1", "http://a2"), "app-inter-a"));
-        Queues.get(Queues.managerQueueName())
+        Queues.get(Queues.managerQueueName("mgr-inter"))
                 .send(Message.createNewTask(inputFile("http://b1", "http://b2"), "app-inter-b"));
         m.startOnce(); // both fan-outs run
         assertEquals(4, Queues.get(Queues.workerQueueName()).receive(10, 1).size());
@@ -668,7 +646,7 @@ public class ManagerTest {
     public void duplicateDoneOcrYieldsExactlyOneSummary() throws Exception {
         String in = inputFile("http://x");
         Manager m = new Manager("mgr-dup", 1, 5);
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-dup"));
+        Queues.get(Queues.managerQueueName("mgr-dup")).send(Message.createNewTask(in, "app-dup"));
         m.startOnce();
         Queue doneOcr = Queues.get(Queues.doneOcrQueueName("mgr-dup"));
         doneOcr.send(Message.createDoneOCR("http://x", "first", "app-dup"));
@@ -698,12 +676,12 @@ public class ManagerTest {
                 super.writeSummary(task, summaryLocation);
             }
         };
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(inA, "app-fo-a"));
+        Queues.get(Queues.managerQueueName("mgr-fo")).send(Message.createNewTask(inA, "app-fo-a"));
         m.startOnce(); // A admitted and its fan-out runs: one image task sent
         assertEquals(1, events.size());
 
         // Queue B's fan-out first, then A's finish behind it in the job queue.
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(inB, "app-fo-b"));
+        Queues.get(Queues.managerQueueName("mgr-fo")).send(Message.createNewTask(inB, "app-fo-b"));
         m.routerTick(); // admits B; its fan-out stays queued
         Queues.get(Queues.doneOcrQueueName("mgr-fo"))
                 .send(Message.createDoneOCR("http://a1", "text-a", "app-fo-a"));
@@ -729,7 +707,7 @@ public class ManagerTest {
         };
 
         // Client C: one image, its fan-out completes at once.
-        Queues.get(Queues.managerQueueName())
+        Queues.get(Queues.managerQueueName("mgr-batch"))
                 .send(Message.createNewTask(inputFile("http://c1"), "app-batch-c"));
         m.startOnce();
         assertEquals(1, events.size());
@@ -739,7 +717,7 @@ public class ManagerTest {
         for (int i = 0; i < manyUrls.length; i++) {
             manyUrls[i] = String.format("http://d%02d", i);
         }
-        Queues.get(Queues.managerQueueName())
+        Queues.get(Queues.managerQueueName("mgr-batch"))
                 .send(Message.createNewTask(inputFile(manyUrls), "app-batch-d"));
         m.routerTick(); // admits D; its fan-out stays queued
 
@@ -770,7 +748,7 @@ public class ManagerTest {
     public void summaryPreservesInputUrlOrder() throws Exception {
         String in = inputFile("zeta", "alpha", "mike");
         Manager m = new Manager("mgr-order", 1, 5);
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-order"));
+        Queues.get(Queues.managerQueueName("mgr-order")).send(Message.createNewTask(in, "app-order"));
         m.startOnce();
         Queue doneOcr = Queues.get(Queues.doneOcrQueueName("mgr-order"));
         // Results arrive in an order unrelated to the input order.
@@ -849,7 +827,7 @@ public class ManagerTest {
             }
         };
         m.getWorkerInstanceIds().add("i-dying");
-        Queues.get(Queues.managerQueueName())
+        Queues.get(Queues.managerQueueName("mgr-reconcile-shutting-down"))
                 .send(Message.createNewTask(inputFile("http://dying"), "app-dying"));
         m.startOnce(); // dev mode: admits the client, one image outstanding
 
@@ -901,7 +879,7 @@ public class ManagerTest {
             }
         };
         m.getWorkerInstanceIds().add("i-dead");
-        Queues.get(Queues.managerQueueName())
+        Queues.get(Queues.managerQueueName("mgr-reconcile-replace"))
                 .send(Message.createNewTask(inputFile("http://a", "http://b"), "app-reconcile"));
         m.startOnce(); // dev mode: admits the client and leaves two images outstanding
 
@@ -955,7 +933,7 @@ public class ManagerTest {
             }
         };
         m.getWorkerInstanceIds().add("i-still-there");
-        Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-reconcile"));
+        Queues.get(Queues.managerQueueName("mgr-reconcile-terminating")).send(Message.createTerminate("app-reconcile"));
         m.startOnce();
         assertFalse(m.isRunning());
 
@@ -1009,7 +987,7 @@ public class ManagerTest {
             }
         };
         m.startOnce();
-        Queues.get(Queues.managerQueueName())
+        Queues.get(Queues.managerQueueName("mgr-err"))
                 .send(Message.createNewTask("in.txt", "app-err"));
         m.startOnce();
         List<Received> replies = Queues.get(Queues.clientQueueName("app-err")).receive(1, 1);

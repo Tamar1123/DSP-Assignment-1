@@ -79,25 +79,27 @@ public class EndToEndTest {
     }
 
     @Test
-    public void busyClientBacksOffAndIsAdmittedWhenSlotFrees() throws Exception {
+    public void busyClientMovesToAnotherManager() throws Exception {
         App.managerClientsN = 1;
         App.workerFilesN = 1;
 
-        final List<Long> directoryLookups = Collections.synchronizedList(new ArrayList<Long>());
+        final List<String> started = Collections.synchronizedList(new ArrayList<String>());
         App.managerDirectory = new ManagerDirectory() {
             @Override
             public List<String> freeManagers() {
-                directoryLookups.add(Long.valueOf(System.nanoTime()));
+                // Stale tag: the first manager still looks free after it is full.
                 return Arrays.asList("manager-e2e");
             }
 
             @Override
-            public void startManager(int freeSlots) {
-                fail("the in-memory test already has a manager");
+            public String startManager(int freeSlots) {
+                started.add("manager-e2e-2");
+                return "manager-e2e-2";
             }
         };
 
-        Manager manager = new Manager("manager-e2e", 1, 1);
+        Manager first = new Manager("manager-e2e", 1, 1);
+        Manager second = new Manager("manager-e2e-2", 1, 1);
         Worker worker = new Worker();
         File firstInput = inputFile("e2e-first", "http://first");
         File secondInput = inputFile("e2e-second", "http://second");
@@ -111,8 +113,8 @@ public class EndToEndTest {
                     return App.run();
                 }
             });
-            Received firstTask = Queues.get(Queues.managerQueueName()).receive(1, 5).get(0);
-            assertEquals(firstInput.getAbsolutePath(), firstTask.getMessage().getInputFileLocation());
+            first.startOnce(); // admits the first client; the only slot is taken
+            assertEquals(1, first.getActiveClients());
 
             App.inputFileName = secondInput.getAbsolutePath();
             secondSummary = CompletableFuture.supplyAsync(new Supplier<String>() {
@@ -121,44 +123,21 @@ public class EndToEndTest {
                     return App.run();
                 }
             });
-            Received secondTask = Queues.get(Queues.managerQueueName()).receive(1, 5).get(0);
-            assertEquals(secondInput.getAbsolutePath(), secondTask.getMessage().getInputFileLocation());
-            String firstClientID = firstTask.getMessage().getLocalAppID();
-            String secondClientID = secondTask.getMessage().getLocalAppID();
-            assertNotEquals(firstClientID, secondClientID);
+            // The second client lands on the full manager, is told busy, and moves on.
+            long deadline = System.currentTimeMillis() + 10000;
+            while (second.getActiveClients() == 0 && System.currentTimeMillis() < deadline) {
+                first.startOnce();
+                second.startOnce();
+            }
+            assertEquals(1, first.getRejectedClients());
+            assertEquals(1, second.getActiveClients());
+            assertEquals(Arrays.asList("manager-e2e-2"), started);
 
-            // Make both requests available in the same receive batch. The first takes the only
-            // slot; the full manager requeues the second on manager_queue instead of answering
-            // busy, so the second client keeps waiting on its inbox.
-            Queue managerQueue = Queues.get(Queues.managerQueueName());
-            managerQueue.release(firstTask);
-            managerQueue.release(secondTask);
-            manager.startOnce();
-            assertEquals(1, manager.getActiveClients());
-            assertEquals(1, manager.getRejectedClients(), "second client was not requeued");
-
-            // The requeue is the manager's doing: the request is back on manager_queue while the
-            // second client's inbox is still empty — no busy DONE_TASK was sent.
-            Received requeued = managerQueue.receive(1, 5).get(0);
-            assertEquals(secondClientID, requeued.getMessage().getLocalAppID());
-            assertEquals(secondInput.getAbsolutePath(), requeued.getMessage().getInputFileLocation());
-            assertTrue(Queues.get(Queues.clientQueueName(secondClientID)).receive(1, 0).isEmpty(),
-                    "a full manager must requeue, not answer busy");
-            assertEquals(2, directoryLookups.size(),
-                    "one lookup per send: the requeue is manager-side, the client does not resend");
-
-            worker.startOnce();
-            manager.startOnce(); // done-OCR is processed although the request queue is gated
-            assertEquals(0, manager.getActiveClients(), "first completion did not free the slot");
-            assertNotNull(firstSummary.get(5, TimeUnit.SECONDS));
-
-            // Hold the requeue until the slot is free, so it is admitted exactly once and the
-            // rejection count stays at the single requeue.
-            managerQueue.release(requeued);
-            manager.startOnce(); // now the requeued request is admitted into the freed slot
-            assertEquals(1, manager.getActiveClients());
-            worker.startOnce();
-            manager.startOnce();
+            for (int i = 0; i < 4; i++) {
+                worker.startOnce();
+                first.startOnce();
+                second.startOnce();
+            }
 
             String firstLocation = firstSummary.get(5, TimeUnit.SECONDS);
             String secondLocation = secondSummary.get(5, TimeUnit.SECONDS);
@@ -167,7 +146,8 @@ public class EndToEndTest {
             assertNotEquals(firstLocation, secondLocation);
             assertSummaryCovers(firstLocation, "http://first");
             assertSummaryCovers(secondLocation, "http://second");
-            assertEquals(2, manager.getServedClients());
+            assertEquals(1, first.getServedClients());
+            assertEquals(1, second.getServedClients());
             new File(firstLocation).deleteOnExit();
             new File(secondLocation).deleteOnExit();
         } finally {

@@ -47,9 +47,11 @@ public class AppTest {
         }
 
         @Override
-        public void startManager(int freeSlots) {
+        public String startManager(int freeSlots) {
             startedWith.add(Integer.valueOf(freeSlots));
-            free.add("manager-" + startedWith.size());
+            String id = "manager-" + startedWith.size();
+            free.add(id);
+            return id;
         }
     }
 
@@ -86,9 +88,12 @@ public class AppTest {
 
     @Test
     public void runSendsNewTaskAndReturnsTheSummaryLocation() throws Exception {
+        FakeDirectory directory = new FakeDirectory();
+        directory.free.add("i-free");
+        App.managerDirectory = directory;
         CompletableFuture<String> summary = CompletableFuture.supplyAsync(startRun());
         try {
-            Received task = Queues.get(Queues.managerQueueName()).receive(1, 5).get(0);
+            Received task = Queues.get(Queues.managerQueueName("i-free")).receive(1, 5).get(0);
             assertEquals(Message.MessageType.NEW_TASK, task.getMessage().getType());
             assertEquals("/tmp/in.txt", task.getMessage().getInputFileLocation());
             String localAppID = task.getMessage().getLocalAppID();
@@ -104,21 +109,24 @@ public class AppTest {
     @Test
     public void terminateIsSentAfterDoneTask() throws Exception {
         App.terminate = true;
+        FakeDirectory directory = new FakeDirectory();
+        directory.free.add("i-free");
+        App.managerDirectory = directory;
         CompletableFuture<String> summary = CompletableFuture.supplyAsync(startRun());
         try {
-            Received task = Queues.get(Queues.managerQueueName()).receive(1, 5).get(0);
+            Received task = Queues.get(Queues.managerQueueName("i-free")).receive(1, 5).get(0);
             assertEquals(Message.MessageType.NEW_TASK, task.getMessage().getType());
             String localAppID = task.getMessage().getLocalAppID();
 
             // No answer has been sent yet, so nothing else may be on the manager queue: an
             // eagerly sent TERMINATE would be sitting right here.
-            assertTrue(Queues.get(Queues.managerQueueName()).receive(1, 0).isEmpty(),
+            assertTrue(Queues.get(Queues.managerQueueName("i-free")).receive(1, 0).isEmpty(),
                     "TERMINATE was sent before DONE_TASK");
 
             Queues.get(Queues.clientQueueName(localAppID))
                     .send(Message.createDoneTask("/tmp/summary.txt", localAppID));
 
-            Received term = Queues.get(Queues.managerQueueName()).receive(1, 5).get(0);
+            Received term = Queues.get(Queues.managerQueueName("i-free")).receive(1, 5).get(0);
             assertEquals(Message.MessageType.TERMINATE, term.getMessage().getType());
 
             // The run must not finish before the ack arrives.
@@ -140,7 +148,7 @@ public class AppTest {
 
         CompletableFuture<String> summary = CompletableFuture.supplyAsync(startRun());
         try {
-            Received task = Queues.get(Queues.managerQueueName()).receive(1, 5).get(0);
+            Received task = Queues.get(Queues.managerQueueName("i-free")).receive(1, 5).get(0);
             assertEquals(Message.MessageType.NEW_TASK, task.getMessage().getType());
             String localAppID = task.getMessage().getLocalAppID();
 
@@ -150,7 +158,7 @@ public class AppTest {
 
             // A free manager exists, so no instance may be started and no second task sent.
             assertEquals(Collections.<Integer>emptyList(), directory.startedWith);
-            assertTrue(Queues.get(Queues.managerQueueName()).receive(1, 0).isEmpty(),
+            assertTrue(Queues.get(Queues.managerQueueName("i-free")).receive(1, 0).isEmpty(),
                     "more than one NEW_TASK was sent");
         } finally {
             cancelIfRunning(summary);
@@ -167,26 +175,27 @@ public class AppTest {
 
         CompletableFuture<String> summary = CompletableFuture.supplyAsync(startRun());
         try {
-            Received first = Queues.get(Queues.managerQueueName()).receive(1, 5).get(0);
+            Received first = Queues.get(Queues.managerQueueName("i-stale")).receive(1, 5).get(0);
             assertEquals(Message.MessageType.NEW_TASK, first.getMessage().getType());
             String localAppID = first.getMessage().getLocalAppID();
 
-            Message busy = Message.createDoneTask(null, localAppID);
+            Message busy = Message.createDoneTask(null, localAppID, "i-stale");
             busy.setError(true);
             Queues.get(Queues.clientQueueName(localAppID)).send(busy);
 
-            Received second = Queues.get(Queues.managerQueueName()).receive(1, 5).get(0);
+            Received second = Queues.get(Queues.managerQueueName("manager-1")).receive(1, 5).get(0);
             assertEquals(Message.MessageType.NEW_TASK, second.getMessage().getType());
             assertEquals(localAppID, second.getMessage().getLocalAppID(),
                     "the retry must be for the same client, so a busy manager left no state behind");
             assertTrue(directory.lookups >= 2, "the directory was not re-read after the busy reply");
-            assertEquals(Collections.<Integer>emptyList(), directory.startedWith);
+            assertEquals(Arrays.asList(Integer.valueOf(App.managerClientsN)), directory.startedWith,
+                    "the busy manager must be avoided, so a new one is started");
 
             Queues.get(Queues.clientQueueName(localAppID))
                     .send(Message.createDoneTask("/tmp/summary.txt", localAppID));
             assertEquals("/tmp/summary.txt", summary.get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS));
 
-            assertTrue(Queues.get(Queues.managerQueueName()).receive(1, 0).isEmpty(),
+            assertTrue(Queues.get(Queues.managerQueueName("manager-1")).receive(1, 0).isEmpty(),
                     "a third NEW_TASK was sent");
         } finally {
             cancelIfRunning(summary);
@@ -201,7 +210,7 @@ public class AppTest {
 
         CompletableFuture<String> summary = CompletableFuture.supplyAsync(startRun());
         try {
-            Received task = Queues.get(Queues.managerQueueName()).receive(1, 5).get(0);
+            Received task = Queues.get(Queues.managerQueueName("i-free")).receive(1, 5).get(0);
             String localAppID = task.getMessage().getLocalAppID();
             Message failed = Message.createDoneTask("Summary write failed: disk full", localAppID);
             failed.setError(true);
@@ -212,7 +221,7 @@ public class AppTest {
                     () -> summary.get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS));
             assertTrue(thrown.getCause() instanceof IllegalStateException);
             assertTrue(thrown.getCause().getMessage().contains("disk full"));
-            assertTrue(Queues.get(Queues.managerQueueName()).receive(1, 0).isEmpty(),
+            assertTrue(Queues.get(Queues.managerQueueName("i-free")).receive(1, 0).isEmpty(),
                     "terminal manager failure must not trigger another NEW_TASK");
             assertEquals(Collections.<Integer>emptyList(), directory.startedWith);
         } finally {
@@ -227,7 +236,7 @@ public class AppTest {
 
         CompletableFuture<String> summary = CompletableFuture.supplyAsync(startRun());
         try {
-            Received task = Queues.get(Queues.managerQueueName()).receive(1, 5).get(0);
+            Received task = Queues.get(Queues.managerQueueName("manager-1")).receive(1, 5).get(0);
             assertEquals(Message.MessageType.NEW_TASK, task.getMessage().getType());
             assertEquals(Arrays.asList(Integer.valueOf(App.managerClientsN)), directory.startedWith,
                     "exactly one manager must be started, with manager-clients-n free slots");

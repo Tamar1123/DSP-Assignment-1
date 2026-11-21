@@ -106,7 +106,7 @@ change the BOM property if it has to move.
 
 ## AWS settings already encoded
 
-- S3 and SQS: `us-west-2` (`AWS.region1`); EC2: `us-east-1` (`AWS.region2`).
+- S3, SQS and EC2: `us-east-1` (`AWS.region1` / `AWS.region2`).
 - Bucket: `AWS.bucketName` (`only-together2`), AMI `ami-00e95a9222311e8ed`, key pair `vockey`,
   `LabInstanceProfile`, `M4_LARGE` — see `utils/AWS.createEC2`.
 - No credentials on this machine. **Never** write a test that reaches AWS; keep decision logic
@@ -119,11 +119,13 @@ change the BOM property if it has to move.
 
 ## Design decisions in this repo (agreed — not all written yet)
 
-- **One fixed manager queue plus one reply queue per client.** `manager_queue` is shared: clients
-  send `NEW_TASK` and `TERMINATE` there, any manager reads it. Replies (`DONE_TASK`, the
-  `TERMINATE` ack) go to `client_<localAppID>`, which the client creates; the manager derives the
-  name from the `localAppID` in the request. Planned `AWS.managerQueueName()` /
-  `AWS.clientQueueName(id)`. *(not written yet)*
+- **One inbound queue per manager plus one reply queue per client.** Managers cannot share a
+  queue: each owns `manager_<instanceId>` (`Queues.managerQueueName(id)`), creates it at boot and
+  deletes it on exit. The client picks a manager (most-free tag, skipping ones that answered busy),
+  starts one if none, creates its queue and sends `NEW_TASK` there. A full manager answers a
+  `DONE_TASK` with `error=true`, no location (busy); the client avoids it and re-picks. Every
+  `DONE_TASK` carries `managerID`; `TERMINATE` goes to that manager's queue. Replies go to
+  `client_<localAppID>`. `worker_queue` stays shared.
 - Each queue has exactly one kind of writer, so messages need no sender field; the queue is the
   separator. Do not re-add a `Sender` field without a reason a queue split cannot cover.
 - `utils.Received` + a small `utils.Queue` interface (`send`/`receive`/`delete`/`release`) keep

@@ -27,6 +27,8 @@ import java.util.UUID;
 public class AwsIntegrationIT {
 
     private static final String TEST_ID = "it-" + UUID.randomUUID().toString().substring(0, 8);
+    // The manager under test reads manager_<id>; start it with this id.
+    private static final String MANAGER_ID = "it-manager";
     private static String clientQueueName;
     private static String s3InputKey;
     private static String s3SummaryKey;
@@ -83,7 +85,7 @@ public class AwsIntegrationIT {
     @Test
     public void managerProcessesNewTaskAndWorkerOcrsIt() throws Exception {
         // Send NEW_TASK directly to the manager queue (no client code involved).
-        Queues.get(Queues.managerQueueName())
+        Queues.get(Queues.managerQueueName(MANAGER_ID))
                 .send(Message.createNewTask(s3InputKey, TEST_ID));
 
         // Poll the client reply queue for DONE_TASK (3-minute timeout).
