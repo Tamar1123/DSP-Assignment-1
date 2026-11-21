@@ -11,6 +11,8 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Scanner;
 import java.util.concurrent.CountDownLatch;
@@ -150,12 +152,81 @@ public class ManagerTest {
     }
 
     @Test
+    public void launchWorkersAddsReturnedIdsToTheSet() {
+        Manager m = new Manager("mgr-launch") {
+            @Override
+            protected List<String> launchWorkerInstances(int count) {
+                assertEquals(2, count);
+                return Arrays.asList("i-1", "i-2");
+            }
+        };
+
+        List<String> launched = m.launchWorkers(2);
+
+        assertEquals(Arrays.asList("i-1", "i-2"), launched);
+        assertEquals(new HashSet<String>(Arrays.asList("i-1", "i-2")), m.getWorkerInstanceIds());
+    }
+
+    @Test
+    public void ensureWorkersCountsOnlyThisManagersWorkers() {
+        final List<Integer> launchCounts = new ArrayList<Integer>();
+        Manager m = new Manager("mgr-ensure", 10, 3) {
+            @Override
+            protected List<String> launchWorkerInstances(int count) {
+                launchCounts.add(count);
+                return Collections.<String>emptyList();
+            }
+        };
+        m.getWorkerInstanceIds().add("i-existing");
+
+        Queues.setDev(false);
+        try {
+            // 6 images / 3 per worker = 2 needed; this manager already has 1 worker.
+            m.ensureWorkers(6);
+        } finally {
+            Queues.setDev(true);
+        }
+
+        assertEquals(Arrays.asList(1), launchCounts);
+    }
+
+    @Test
+    public void ensureWorkersCapsAtThisManagersInstanceLimit() {
+        final List<Integer> launchCounts = new ArrayList<Integer>();
+        Manager m = new Manager("mgr-cap", 10, 1) {
+            @Override
+            protected List<String> launchWorkerInstances(int count) {
+                launchCounts.add(count);
+                return Collections.<String>emptyList();
+            }
+        };
+        for (int i = 0; i < Manager.MAX_INSTANCES - 1; i++) {
+            m.getWorkerInstanceIds().add("i-cap-" + i);
+        }
+
+        Queues.setDev(false);
+        try {
+            m.ensureWorkers(100);
+        } finally {
+            Queues.setDev(true);
+        }
+
+        assertTrue(launchCounts.isEmpty(),
+                "one manager plus MAX_INSTANCES-1 workers is the per-manager cap");
+    }
+
+    @Test
     public void terminationStopsWorkersLaunchedByThisManager() {
-        final List<String> terminatedManagers = new ArrayList<String>();
+        final List<String> terminatedIds = new ArrayList<String>();
         Manager m = new Manager("mgr-termination") {
             @Override
-            protected void terminateWorkersOf(String managerID) {
-                terminatedManagers.add(managerID);
+            protected List<String> launchWorkerInstances(int count) {
+                return Arrays.asList("i-termination-worker");
+            }
+
+            @Override
+            protected void terminateInstances(List<String> instanceIds) {
+                terminatedIds.addAll(instanceIds);
             }
 
             @Override
@@ -163,6 +234,7 @@ public class ManagerTest {
                 // Keep this offline test focused on worker termination.
             }
         };
+        m.launchWorkers(1);
         Queue managerQueue = Queues.get(Queues.managerQueueName());
         Queues.register(Queues.clientQueueName("app-termination"), new InMemoryQueue());
         Queues.setDev(false);
@@ -170,7 +242,8 @@ public class ManagerTest {
             managerQueue.send(Message.createTerminate("app-termination"));
             m.startOnce();
 
-            assertEquals(Arrays.asList("mgr-termination"), terminatedManagers);
+            assertEquals(Arrays.asList("i-termination-worker"), terminatedIds);
+            assertTrue(m.getWorkerInstanceIds().isEmpty(), "the set is cleared after termination");
             assertFalse(m.isRunning());
         } finally {
             Queues.setDev(true);
@@ -178,18 +251,69 @@ public class ManagerTest {
     }
 
     @Test
-    public void devModeDoesNotAttemptWorkerTermination() {
-        final List<String> terminatedManagers = new ArrayList<String>();
-        Manager m = new Manager("mgr-dev-termination") {
+    public void stopWorkersTerminatesOnlyThisManagersIds() {
+        final List<String> terminatedIds = new ArrayList<String>();
+        Manager mine = new Manager("mgr-mine") {
             @Override
-            protected void terminateWorkersOf(String managerID) {
-                terminatedManagers.add(managerID);
+            protected List<String> launchWorkerInstances(int count) {
+                return Arrays.asList("i-mine");
+            }
+
+            @Override
+            protected void terminateInstances(List<String> instanceIds) {
+                terminatedIds.addAll(instanceIds);
+            }
+
+            @Override
+            protected void deleteDoneOcrQueueIfAws() {
             }
         };
+        Manager other = new Manager("mgr-other") {
+            @Override
+            protected List<String> launchWorkerInstances(int count) {
+                return Arrays.asList("i-other");
+            }
+        };
+        mine.launchWorkers(1);
+        other.launchWorkers(1);
+
+        Queue managerQueue = Queues.get(Queues.managerQueueName());
+        Queues.register(Queues.clientQueueName("app-only-mine"), new InMemoryQueue());
+        Queues.setDev(false);
+        try {
+            managerQueue.send(Message.createTerminate("app-only-mine"));
+            mine.startOnce();
+
+            assertEquals(Arrays.asList("i-mine"), terminatedIds);
+            assertTrue(mine.getWorkerInstanceIds().isEmpty());
+            assertEquals(new HashSet<String>(Arrays.asList("i-other")),
+                    other.getWorkerInstanceIds(), "another manager's workers must be untouched");
+        } finally {
+            Queues.setDev(true);
+        }
+    }
+
+    @Test
+    public void devModeDoesNotAttemptWorkerTermination() {
+        final List<String> terminatedIds = new ArrayList<String>();
+        Manager m = new Manager("mgr-dev-termination") {
+            @Override
+            protected List<String> launchWorkerInstances(int count) {
+                return Arrays.asList("i-dev");
+            }
+
+            @Override
+            protected void terminateInstances(List<String> instanceIds) {
+                terminatedIds.addAll(instanceIds);
+            }
+        };
+        m.launchWorkers(1);
+
         Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-dev-termination"));
         m.startOnce();
 
-        assertTrue(terminatedManagers.isEmpty(), "dev mode must not reach the AWS operation");
+        assertTrue(terminatedIds.isEmpty(), "dev mode must not reach the AWS operation");
+        assertEquals(new HashSet<String>(Arrays.asList("i-dev")), m.getWorkerInstanceIds());
     }
 
     @Test

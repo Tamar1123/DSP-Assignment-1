@@ -10,9 +10,11 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -48,6 +50,9 @@ public class Manager implements Runnable {
     private final int maxClients;
     /** worker-files-n: target number of input files per worker. */
     private final int workerFilesN;
+
+    /** Worker instance IDs this manager launched; the source of truth for its own workers. */
+    private final Set<String> workerInstanceIds = ConcurrentHashMap.newKeySet();
 
     /** Admitted clients keyed by localAppID; its size is the load. */
     private final Map<String, ClientTask> clientTasks = new ConcurrentHashMap<String, ClientTask>();
@@ -369,31 +374,29 @@ public class Manager implements Runnable {
         }
     }
 
-    /** Starts the workers needed for the outstanding images, capped by MAX_INSTANCES. */
+    /** Starts the workers needed for the outstanding images, capped per manager by MAX_INSTANCES. */
     protected void ensureWorkers(int outstanding) {
         if (Queues.isDev() || outstanding <= 0) {
             return;
         }
         try {
-            AWS aws = AWS.getInstance();
-            int liveWorkers = aws.runningWorkerCount();
-            int liveInstances = aws.runningInstanceCount();
+            int liveWorkers = workerInstanceIds.size();
             int needed = workersNeeded(outstanding, workerFilesN);
             int toStart = needed - liveWorkers;
             if (toStart <= 0) {
                 return;
             }
-            int allowed = MAX_INSTANCES - liveInstances;
+            int allowed = MAX_INSTANCES - (liveWorkers + 1); // this manager plus its workers
             if (toStart > allowed) {
                 toStart = allowed;
             }
             if (toStart <= 0) {
-                logDebug("instance cap reached (" + liveInstances + "/" + MAX_INSTANCES
-                        + " live, " + liveWorkers + " workers)");
+                logDebug("instance cap reached (" + (liveWorkers + 1) + "/" + MAX_INSTANCES
+                        + " for this manager, " + liveWorkers + " workers)");
                 return;
             }
-            launchWorkers(toStart);
-            logDebug("launched " + toStart + " worker(s): " + outstanding + " image(s), "
+            List<String> launched = launchWorkers(toStart);
+            logDebug("launched " + launched.size() + " worker(s): " + outstanding + " image(s), "
                     + workerFilesN + " per worker, " + liveWorkers + " already live");
         } catch (Exception e) {
             // Worker bootstrap is best effort: the manager must keep serving clients.
@@ -401,8 +404,15 @@ public class Manager implements Runnable {
         }
     }
 
-    /** Starts worker instances that download the uploaded worker jar and run the worker. */
-    private void launchWorkers(int count) {
+    /** Launches workers and records their IDs as this manager's workers. */
+    protected List<String> launchWorkers(int count) {
+        List<String> launched = launchWorkerInstances(count);
+        workerInstanceIds.addAll(launched);
+        return launched;
+    }
+
+    /** Launches worker instances; protected so tests can supply IDs without reaching AWS. */
+    protected List<String> launchWorkerInstances(int count) {
         AWS aws = AWS.getInstance();
         String script = "#!/bin/bash\n"
                 + "set -e\n"
@@ -418,9 +428,7 @@ public class Manager implements Runnable {
                 + (debug ? "touch /home/ec2-user/worker.log\n(while true; do aws s3 cp /home/ec2-user/worker.log s3://"
                 + aws.bucketName + "/" + AWS.S3_PREFIX + "logs/worker-$(hostname).log --quiet; sleep 5; done) &\n" : "")
                 + "\"$JAVA_BIN\" -jar " + WORKER_JAR_PATH + " > /home/ec2-user/worker.log 2>&1 || { cat /home/ec2-user/worker.log > /dev/console; exit 1; }\n";
-        // Tag workers with this manager's ID so a terminating manager can find and stop
-        // the workers it launched (see AWS.MANAGER_TAG).
-        aws.createEC2(script, WORKER_TAG, count, AWS.UNKNOWN_FREE, managerID);
+        return aws.createEC2Instances(script, WORKER_TAG, count);
     }
 
     private int totalOutstanding() {
@@ -523,22 +531,38 @@ public class Manager implements Runnable {
         return urls;
     }
 
-    /** Stops this manager's workers after the client drain; never calls AWS in dev mode. */
+    /** Terminates only the workers this manager launched; never calls AWS in dev mode. */
     private void stopWorkers() {
         if (Queues.isDev()) {
             return;
         }
+        List<String> ids = new ArrayList<String>(workerInstanceIds);
+        if (ids.isEmpty()) {
+            return;
+        }
         try {
-            terminateWorkersOf(managerID);
+            terminateInstances(ids);
         } catch (Exception e) {
             // Worker shutdown is best effort and must not prevent the terminate acknowledgement.
             System.err.println("[MANAGER] could not stop workers: " + e.getMessage());
+        } finally {
+            workerInstanceIds.clear();
         }
     }
 
-    /** Delegates worker termination to AWS; protected so termination can be tested offline. */
-    protected void terminateWorkersOf(String managerID) {
-        AWS.getInstance().terminateWorkersOf(managerID);
+    /** Requests termination through AWS; protected so termination can be tested offline. */
+    protected void terminateInstances(List<String> instanceIds) {
+        AWS.getInstance().terminateInstances(instanceIds);
+    }
+
+    /** Current EC2 state per worker ID; protected so reconcile can be tested offline. */
+    protected Map<String, String> workerStates(Collection<String> instanceIds) {
+        return AWS.getInstance().instanceStates(instanceIds);
+    }
+
+    /** Test seam: the IDs of the workers this manager launched. */
+    protected Set<String> getWorkerInstanceIds() {
+        return workerInstanceIds;
     }
 
     /** Deletes the per-manager done-OCR queue in AWS mode; a no-op in dev. */

@@ -14,6 +14,7 @@ import software.amazon.awssdk.services.sqs.model.DeleteQueueRequest;
 
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -31,6 +32,9 @@ public class AWS {
 
     public static Region region1 = Region.US_EAST_1;
     public static Region region2 = Region.US_EAST_1;
+
+    /** Delay between DescribeInstances probes while instances settle. */
+    private static final long TERMINATE_POLL_INTERVAL_MILLIS = 2_000L;
 
     private AWS() {
         s3 = S3Client.builder().region(region1)
@@ -137,31 +141,26 @@ public String bucketName;
 
     
     // EC2
-    public String createEC2(String script, String tagName, int numberOfInstances) {
-        return createEC2(script, tagName, numberOfInstances, UNKNOWN_FREE, null);
-    }
 
     /**
-     * Starts instances and tags them with {@code Name} and, when {@code freeSlots} is not
-     * {@link #UNKNOWN_FREE}, with the manager free-slot hint. A caller starting a manager
-     * passes {@code manager-clients-n} so the very first describe call already sees it.
+     * Starts {@code numberOfInstances} instances tagged with {@code Name} and returns every
+     * launched instance ID. A count below one launches nothing.
      */
-    public String createEC2(String script, String tagName, int numberOfInstances, int freeSlots) {
-        return createEC2(script, tagName, numberOfInstances, freeSlots, null);
+    public List<String> createEC2Instances(String script, String tagName, int numberOfInstances) {
+        return createEC2Instances(script, tagName, numberOfInstances, UNKNOWN_FREE, null);
     }
 
-    /**
-     * As {@link #createEC2(String, String, int, int)}, plus a {@link #MANAGER_TAG} tag
-     * when {@code managerID} is non-null and non-empty, so a terminating manager can
-     * later find and stop the workers it launched.
-     */
-    public String createEC2(String script, String tagName, int numberOfInstances, int freeSlots, String managerID) {
+    private List<String> createEC2Instances(String script, String tagName, int numberOfInstances,
+                                            int freeSlots, String managerID) {
+        if (numberOfInstances < 1) {
+            return Collections.emptyList();
+        }
         List<Tag> tags = buildInstanceTags(tagName, freeSlots, managerID);
         RunInstancesRequest runRequest = RunInstancesRequest.builder()
                 .instanceType(InstanceType.M4_LARGE)
                 .imageId(ami)
                 .maxCount(numberOfInstances)
-                .minCount(1)
+                .minCount(numberOfInstances)
                 .keyName("vockey")
                 .iamInstanceProfile(IamInstanceProfileSpecification.builder().name("LabInstanceProfile").build())
                 .userData(Base64.getEncoder().encodeToString(script.getBytes()))
@@ -172,12 +171,41 @@ public String bucketName;
                 .build();
 
         RunInstancesResponse response = ec2.runInstances(runRequest);
-        String instanceId = response.instances().get(0).instanceId();
-        if (client.App.debug) {
-            System.out.printf("[DEBUG] Successfully started EC2 instance %s based on AMI %s%n",
-                    instanceId, ami);
+        List<String> instanceIds = new ArrayList<String>();
+        for (Instance instance : response.instances()) {
+            instanceIds.add(instance.instanceId());
         }
-        return instanceId;
+        if (client.App.debug) {
+            System.out.printf("[DEBUG] Successfully started %d EC2 instance(s) based on AMI %s: %s%n",
+                    instanceIds.size(), ami, instanceIds);
+        }
+        return instanceIds;
+    }
+
+    public String createEC2(String script, String tagName, int numberOfInstances) {
+        return firstInstanceId(createEC2Instances(script, tagName, numberOfInstances));
+    }
+
+    /**
+     * Starts instances and tags them with {@code Name} and, when {@code freeSlots} is not
+     * {@link #UNKNOWN_FREE}, with the manager free-slot hint. A caller starting a manager
+     * passes {@code manager-clients-n} so the very first describe call already sees it.
+     */
+    public String createEC2(String script, String tagName, int numberOfInstances, int freeSlots) {
+        return firstInstanceId(createEC2Instances(script, tagName, numberOfInstances, freeSlots, null));
+    }
+
+    /**
+     * As {@link #createEC2(String, String, int, int)}, plus a {@link #MANAGER_TAG} tag
+     * when {@code managerID} is non-null and non-empty, so a terminating manager can
+     * later find and stop the workers it launched.
+     */
+    public String createEC2(String script, String tagName, int numberOfInstances, int freeSlots, String managerID) {
+        return firstInstanceId(createEC2Instances(script, tagName, numberOfInstances, freeSlots, managerID));
+    }
+
+    private static String firstInstanceId(List<String> instanceIds) {
+        return instanceIds.isEmpty() ? null : instanceIds.get(0);
     }
 
     // ---- instance tag building --------------------------------------------------
@@ -384,20 +412,19 @@ public String bucketName;
     }
 
     /**
-     * Current state per instance ID; an ID EC2 no longer reports is simply absent, which
-     * {@link WorkerTermination#unsettled} reads as "not yet confirmed stopped" during the
-     * wait.
+     * Current state per instance ID; an ID EC2 no longer reports is simply absent.
      * A filter (not {@code instanceIds}) keeps an unknown ID from failing the whole probe.
      */
-    private Map<String, String> instanceStates(List<String> instanceIds) {
+    public Map<String, String> instanceStates(Collection<String> instanceIds) {
         Map<String, String> states = new HashMap<>();
         if (instanceIds == null || instanceIds.isEmpty()) {
             return states;
         }
+        List<String> ids = new ArrayList<String>(instanceIds);
         String nextToken = null;
         while (true) {
             DescribeInstancesResponse response = ec2.describeInstances(DescribeInstancesRequest.builder()
-                    .filters(Filter.builder().name("instance-id").values(instanceIds).build())
+                    .filters(Filter.builder().name("instance-id").values(ids).build())
                     .nextToken(nextToken)
                     .build());
             for (Reservation reservation : response.reservations()) {
@@ -412,6 +439,67 @@ public String bucketName;
             }
         }
         return states;
+    }
+
+    /**
+     * Terminates every given instance and waits until each ID is settled: terminated,
+     * shutting-down, stopped, or no longer reported by EC2. There is no timeout; a worker
+     * that never settles keeps the manager waiting. AWS errors are logged and swallowed so
+     * termination is never blocked by a failed call.
+     */
+    public void terminateInstances(List<String> instanceIds) {
+        if (instanceIds == null || instanceIds.isEmpty()) {
+            return;
+        }
+        List<String> ids = new ArrayList<String>(instanceIds);
+        try {
+            ec2.terminateInstances(TerminateInstancesRequest.builder()
+                    .instanceIds(ids)
+                    .build());
+            if (client.App.debug) {
+                System.out.printf("[DEBUG] requested termination of %d instance(s): %s%n",
+                        ids.size(), ids);
+            }
+        } catch (RuntimeException e) {
+            System.err.println("[AWS] could not terminate instances " + ids + ": " + e.getMessage());
+            return;
+        }
+
+        while (true) {
+            Map<String, String> states;
+            try {
+                states = instanceStates(ids);
+            } catch (RuntimeException e) {
+                System.err.println("[AWS] could not read instance states while stopping " + ids
+                        + ": " + e.getMessage());
+                return;
+            }
+            if (allSettled(ids, states)) {
+                return;
+            }
+            try {
+                Thread.sleep(TERMINATE_POLL_INTERVAL_MILLIS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    /** True when every ID is terminated, shutting down, stopped, or gone from EC2. */
+    private static boolean allSettled(List<String> instanceIds, Map<String, String> states) {
+        for (String id : instanceIds) {
+            String state = states.get(id);
+            if (state == null) {
+                continue; // no longer reported: the instance is gone
+            }
+            if (!"terminated".equals(state)
+                    && !"shutting-down".equals(state)
+                    && !"stopped".equals(state)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static WorkerTermination.InstanceRef toInstanceRef(Instance instance) {
