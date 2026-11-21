@@ -8,19 +8,15 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 
-/**
- * In-memory {@link Queue} used in dev mode. It mimics the SQS shape (receive/delete/release)
- * without any network access.
- */
+// In-memory Queue used in dev mode. Mimics the SQS shape (receive/delete/release) without
+// any network access.
 public class InMemoryQueue implements Queue {
     static final int QUEUE_CAPACITY = 1000;
 
     private final BlockingQueue<Received> queue = new ArrayBlockingQueue<Received>(QUEUE_CAPACITY);
-    /**
-     * Messages given back with {@link #release(Received)}. Kept outside the bounded queue so a
-     * release can never block the caller (a full manager moves on; a blocked router would stall
-     * every client) and never drops the message. FIFO, like SQS.
-     */
+    // Messages given back with release(Received). Kept outside the bounded queue so a release
+    // can never block the caller (a full manager moves on; a blocked router would stall every
+    // client) and never drops the message. FIFO, like SQS.
     private final ConcurrentLinkedQueue<Received> released = new ConcurrentLinkedQueue<Received>();
 
     public InMemoryQueue() {

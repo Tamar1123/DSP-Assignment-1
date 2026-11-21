@@ -1,9 +1,6 @@
 package utils;
 
-/**
- * A message received from a {@link Queue}, together with the receipt handle needed to
- * delete or release it.
- */
+// A message received from a Queue, together with the receipt handle needed to delete or release it.
 public final class Received {
     private final Message message;
     private final String receiptHandle;

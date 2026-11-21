@@ -40,11 +40,9 @@ public class WorkerTest {
         assertNotNull(extractedText);
     }
 
-    /**
-     * Exercises the real Tess4J path without the network and without a system Tesseract:
-     * the native libraries and trained data are bundled in the jar. The bundle is linux-x86-64,
-     * so the test is skipped on other platforms.
-     */
+    // Exercises the real Tess4J path without the network and without a system Tesseract: the
+    // native libraries and trained data are bundled in the jar. The bundle is linux-x86-64, so
+    // the test is skipped on other platforms.
     @Test
     public void tess4jReadsAGeneratedImage() throws Exception {
         // The bundled engine is linux-x86-64 only; elsewhere there is no engine to test.
@@ -140,12 +138,10 @@ public class WorkerTest {
         assertEquals("http://img", again.get(0).getMessage().getImageURL());
     }
 
-    /**
-     * Exercises the redirect handling in {@link Worker#downloadImage} on a loopback HTTP server:
-     * /start.png answers 301 with a relative Location to /final.jpg, which answers 200 with known
-     * bytes. The downloaded file must hold the final body and end in .jpg (extension from the
-     * final URL, not the start URL).
-     */
+    // Exercises the redirect handling in Worker.downloadImage on a loopback HTTP server:
+    // /start.png answers 301 with a relative Location to /final.jpg, which answers 200 with known
+    // bytes. The downloaded file must hold the final body and end in .jpg (extension from the
+    // final URL, not the start URL).
     @Test
     public void downloadImageFollowsRedirects() throws Exception {
         final byte[] finalBytes = "fake jpg bytes".getBytes("UTF-8");
@@ -182,7 +178,7 @@ public class WorkerTest {
         }
     }
 
-    /** A 301 with a blank Location must fail the download and must not leave a temp file. */
+    // A 301 with a blank Location must fail the download and must not leave a temp file.
     @Test
     public void downloadImageFailsOnBlankLocation() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);

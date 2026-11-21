@@ -7,10 +7,8 @@ import java.io.File;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * The worker must be able to OCR with nothing installed on the machine: the engine, its shared
- * library closure and the trained data all come from the classpath.
- */
+// The worker must be able to OCR with nothing installed on the machine: the engine, its shared
+// library closure and the trained data all come from the classpath.
 public class OcrRuntimeTest {
 
     @Test

@@ -6,17 +6,12 @@ import utils.Queues;
 
 import java.util.UUID;
 
-/**
- * Dev entry point: one manager and two workers in this JVM, then the real client flow.
- *
- * <b>This is not the graded entry point.</b> The graded run uses {@code client.App}
- * (the jar's {@code Main-Class}) with {@link Queues#DEV} set to {@code false}, so the manager
- * and the workers run as separate processes on EC2 and talk over SQS. This class exists only
- * to exercise the same component code against the in-memory transport, with the queue wiring
- * being the only difference.
- *
- * Usage: {@code java -cp <classes+deps> client.DevRunner input.txt output.html 1 1 [terminate]}
- */
+// Dev entry point: one manager and two workers in this JVM, then the real client flow.
+// This is NOT the graded entry point. The graded run uses client.App (the jar's Main-Class)
+// with Queues.DEV set to false, so the manager and workers run as separate processes on EC2
+// and talk over SQS. This class exists only to exercise the same component code against the
+// in-memory transport, with the queue wiring being the only difference.
+// Usage: java -cp <classes+deps> client.DevRunner input.txt output.html 1 1 [terminate]
 public final class DevRunner {
     private static final int WORKERS = 2;
     private static final long JOIN_TIMEOUT_MILLIS = 5000;

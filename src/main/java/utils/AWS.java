@@ -27,13 +27,13 @@ public class AWS {
     private final SqsClient sqs;
     private final Ec2Client ec2;
 
-    /** Public Ubuntu 22.04 AMI (us-east-1); boot installs the JRE/AWS CLI if absent. */
+    // Public Ubuntu 22.04 AMI (us-east-1); boot installs the JRE/AWS CLI if absent.
     public static String ami = "ami-0e72706534bb166e3";
 
     public static Region region1 = Region.US_EAST_1;
     public static Region region2 = Region.US_EAST_1;
 
-    /** Delay between DescribeInstances probes while instances settle. */
+    // Delay between DescribeInstances probes while instances settle.
     private static final long TERMINATE_POLL_INTERVAL_MILLIS = 2_000L;
 
     private AWS() {
@@ -66,17 +66,14 @@ public class AWS {
         this.bucketName = resolveBucketName();
     }
 
-    /** Number of live manager instances (running or pending). */
+    // Number of live manager instances (running or pending).
     public int liveManagerCount() {
         return countLiveInstances("manager");
     }
 
-    /**
-     * Number of instances tagged {@code tagName} in any of the given EC2 states. A
-     * shutting-down worker still occupies the fleet (the cap / its slot) until EC2
-     * finishes removing it, so callers counting workers include "shutting-down" among
-     * the live states.
-     */
+    // Number of instances tagged tagName in any of the given EC2 states. A shutting-down worker
+    // still occupies the fleet (the cap / its slot) until EC2 finishes removing it, so callers
+    // counting workers include "shutting-down" among the live states.
     private int countInstances(String tagName, String... states) {
         if (states == null || states.length == 0) {
             throw new IllegalArgumentException("at least one instance state is required");
@@ -178,10 +175,8 @@ public String bucketName;
     
     // EC2
 
-    /**
-     * Starts {@code numberOfInstances} instances tagged with {@code Name} and returns every
-     * launched instance ID. A count below one launches nothing.
-     */
+    // Starts numberOfInstances instances tagged with Name and returns every launched instance
+    // ID. A count below one launches nothing.
     public List<String> createEC2Instances(String script, String tagName, int numberOfInstances) {
         return createEC2Instances(script, tagName, numberOfInstances, UNKNOWN_FREE);
     }
@@ -222,11 +217,9 @@ public String bucketName;
         return firstInstanceId(createEC2Instances(script, tagName, numberOfInstances));
     }
 
-    /**
-     * Starts instances and tags them with {@code Name} and, when {@code freeSlots} is not
-     * {@link #UNKNOWN_FREE}, with the manager free-slot hint. A caller starting a manager
-     * passes {@code manager-clients-n} so the very first describe call already sees it.
-     */
+    // Starts instances and tags them with Name and, when freeSlots is not UNKNOWN_FREE, with the
+    // manager free-slot hint. A caller starting a manager passes manager-clients-n so the very
+    // first describe call already sees it.
     public String createEC2(String script, String tagName, int numberOfInstances, int freeSlots) {
         return firstInstanceId(createEC2Instances(script, tagName, numberOfInstances, freeSlots));
     }
@@ -237,11 +230,8 @@ public String bucketName;
 
     // ---- instance tag building --------------------------------------------------
 
-    /**
-     * Pure tag set for a new instance: always {@code Name}, plus the free-slot hint when
-     * {@code freeSlots} is not {@link #UNKNOWN_FREE}. No AWS client is touched, so tests
-     * can call it directly.
-     */
+    // Pure tag set for a new instance: always Name, plus the free-slot hint when freeSlots is
+    // not UNKNOWN_FREE. No AWS client is touched, so tests can call it directly.
     public static List<Tag> buildInstanceTags(String tagName, int freeSlots) {
         List<Tag> tags = new ArrayList<>();
         tags.add(Tag.builder().key("Name").value(tagName).build());
@@ -253,20 +243,20 @@ public String bucketName;
 
     // ---- manager free-slot tag -------------------------------------------------
 
-    /** EC2 tag key carrying how many more clients a manager can admit. */
+    // EC2 tag key carrying how many more clients a manager can admit.
     public static final String FREE_TAG = "free";
 
-    /** Sentinel for "no usable free count" (missing or malformed tag). */
+    // Sentinel for "no usable free count" (missing or malformed tag).
     public static final int UNKNOWN_FREE = -1;
 
-    /** One entry of {@link #freeManagers()}: instance id plus its free-slot hint. */
+    // One entry of freeManagers(): instance id plus its free-slot hint.
     public static final class ManagerSlot extends FreeSlotTags.ManagerSlot {
         public ManagerSlot(String id, int free) {
             super(id, free);
         }
     }
 
-    /** Pure compatibility delegates; they do not initialize the AWS singleton. */
+    // Pure compatibility delegates; they do not initialize the AWS singleton.
     public static String formatFreeSlots(int free) {
         return FreeSlotTags.formatFreeSlots(free);
     }
@@ -279,10 +269,8 @@ public String bucketName;
         return FreeSlotTags.freeSlotsOf(tags);
     }
 
-    /**
-     * Writes the manager's current free-slot count. Tags are a hint without
-     * compare-and-set, so this is best effort and never fails the caller.
-     */
+    // Writes the manager's current free-slot count. Tags are a hint without compare-and-set, so
+    // this is best effort and never fails the caller.
     public void setFreeSlots(String managerID, int free) {
         if (managerID == null || managerID.isEmpty()) {
             return;
@@ -301,33 +289,27 @@ public String bucketName;
         }
     }
 
-    /**
-     * Number of live workers: running, pending, or shutting-down. "Live" is stricter than
-     * "running" so a worker that is still booting counts against the cap too, and a
-     * shutting-down worker still occupies the fleet until EC2 removes it, so counting it as
-     * live avoids launching a replacement while it terminates.
-     */
+    // Number of live workers: running, pending, or shutting-down. "Live" is stricter than
+    // "running" so a worker that is still booting counts against the cap too, and a
+    // shutting-down worker still occupies the fleet until EC2 removes it, so counting it as
+    // live avoids launching a replacement while it terminates.
     public int runningWorkerCount() {
         return countInstances("worker", "running", "pending", "shutting-down");
     }
 
-    /**
-     * Number of live manager and worker instances, the manager included. Managers count as
-     * running + pending only; workers additionally count while shutting-down.
-     */
+    // Number of live manager and worker instances, the manager included. Managers count as
+    // running + pending only; workers additionally count while shutting-down.
     public int runningInstanceCount() {
         return countLiveInstances("manager") + countInstances("worker", "running", "pending", "shutting-down");
     }
 
-    /** Live instances of a role in the strict states: running or pending (managers). */
+    // Live instances of a role in the strict states: running or pending (managers).
     private int countLiveInstances(String tagName) {
         return countInstances(tagName, "running", "pending");
     }
 
-    /**
-     * Current state per instance ID; an ID EC2 no longer reports is simply absent.
-     * A filter (not {@code instanceIds}) keeps an unknown ID from failing the whole probe.
-     */
+    // Current state per instance ID; an ID EC2 no longer reports is simply absent. A filter
+    // (not instanceIds) keeps an unknown ID from failing the whole probe.
     public Map<String, String> instanceStates(Collection<String> instanceIds) {
         Map<String, String> states = new HashMap<>();
         if (instanceIds == null || instanceIds.isEmpty()) {
@@ -354,12 +336,10 @@ public String bucketName;
         return states;
     }
 
-    /**
-     * Terminates every given instance and waits until each ID is settled: terminated,
-     * shutting-down, stopped, or no longer reported by EC2. There is no timeout; a worker
-     * that never settles keeps the manager waiting. AWS errors are logged and swallowed so
-     * termination is never blocked by a failed call.
-     */
+    // Terminates every given instance and waits until each ID is settled: terminated,
+    // shutting-down, stopped, or no longer reported by EC2. There is no timeout; a worker that
+    // never settles keeps the manager waiting. AWS errors are logged and swallowed so
+    // termination is never blocked by a failed call.
     public void terminateInstances(List<String> instanceIds) {
         if (instanceIds == null || instanceIds.isEmpty()) {
             return;
@@ -399,7 +379,7 @@ public String bucketName;
         }
     }
 
-    /** True when every ID is terminated, shutting down, stopped, or gone from EC2. */
+    // True when every ID is terminated, shutting down, stopped, or gone from EC2.
     private static boolean allSettled(List<String> instanceIds, Map<String, String> states) {
         for (String id : instanceIds) {
             String state = states.get(id);
@@ -415,7 +395,7 @@ public String bucketName;
         return true;
     }
 
-    /** Lists running managers with a usable {@code free} tag, most free first. */
+    // Lists running managers with a usable free tag, most free first.
     public List<ManagerSlot> freeManagers() {
         List<ManagerSlot> managers = new ArrayList<>();
         String nextToken = null;
@@ -463,10 +443,7 @@ public String bucketName;
         return sqs;
     }
 
-    /**
-     * Creates the queue if it does not exist yet (SQS createQueue is idempotent) and
-     * returns its URL.
-     */
+    // Creates the queue if it does not exist yet (createQueue is idempotent) and returns its URL.
     public String createQueue(String queueName) {
         CreateQueueRequest createQueueRequest = CreateQueueRequest.builder()
                 .queueName(queueName)
@@ -474,7 +451,7 @@ public String bucketName;
         return sqs.createQueue(createQueueRequest).queueUrl();
     }
 
-    /** Deletes a queue, ignoring failures (the queue may already be gone). */
+    // Deletes a queue, ignoring failures (the queue may already be gone).
     public void deleteQueue(String queueUrl) {
         try {
             sqs.deleteQueue(DeleteQueueRequest.builder().queueUrl(queueUrl).build());

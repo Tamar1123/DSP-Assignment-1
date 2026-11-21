@@ -346,7 +346,7 @@ public class ManagerTest {
         assertEquals(7, fleetWorkers.get());
     }
 
-    /** Manager whose live counts read a simulated fleet counter that launches grow. */
+    // Manager whose live counts read a simulated fleet counter that launches grow.
     private Manager fleetAwareManager(final String id, final List<Integer> launchCounts,
             final AtomicInteger fleetWorkers, final int managerCount) {
         return new Manager(id, 10, 2) {
@@ -701,7 +701,7 @@ public class ManagerTest {
         }
     }
 
-    /** Manager queue whose requeue always fails, recording the deletes it is asked to do. */
+    // Manager queue whose requeue always fails, recording the deletes it is asked to do.
     private static class ReleaseFailingQueue extends InMemoryQueue {
         final List<Received> deleted = Collections.synchronizedList(new ArrayList<Received>());
 
@@ -722,7 +722,7 @@ public class ManagerTest {
         }
     }
 
-    /** Worker queue that records every send so tests can check job ordering. */
+    // Worker queue that records every send so tests can check job ordering.
     private static class RecordingQueue extends InMemoryQueue {
         final List<String> events;
 
@@ -737,7 +737,7 @@ public class ManagerTest {
         }
     }
 
-    /** Records sends and pauses the fan-out after the first batch of ten until released. */
+    // Records sends and pauses the fan-out after the first batch of ten until released.
     private static class BatchPausingQueue extends RecordingQueue {
         private final CountDownLatch firstBatchSent = new CountDownLatch(1);
         private final CountDownLatch resume = new CountDownLatch(1);
@@ -1161,7 +1161,7 @@ public class ManagerTest {
         assertEquals(new HashSet<String>(Arrays.asList("i-still-there")), m.getWorkerInstanceIds());
     }
 
-    /** Runs reconcile with AWS mode on; the test manager overrides every AWS seam. */
+    // Runs reconcile with AWS mode on; the test manager overrides every AWS seam.
     private void reconcile(Manager m) {
         Queues.setDev(false);
         try {

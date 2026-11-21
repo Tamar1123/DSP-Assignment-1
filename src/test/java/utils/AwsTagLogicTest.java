@@ -11,7 +11,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Pure free-slot tag logic; these tests must not construct AWS clients. */
+// Pure free-slot tag logic; these tests must not construct AWS clients.
 public class AwsTagLogicTest {
 
     @Test

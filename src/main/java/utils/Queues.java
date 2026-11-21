@@ -2,18 +2,15 @@ package utils;
 
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Owns the queue names used across the system and chooses the transport implementation.
- *
- * Every component asks for a named queue through {@link #get(String)} and never constructs
- * a queue itself. In dev mode the queues live in this JVM ({@link InMemoryQueue}); in a real
- * run they are real SQS queues ({@link SqsQueue}).
- */
+// Owns the queue names used across the system and chooses the transport implementation.
+// Every component asks for a named queue through get(String) and never constructs a queue
+// itself. In dev mode the queues live in this JVM (InMemoryQueue); in a real run they are
+// real SQS queues (SqsQueue).
 public final class Queues {
     public static final String MANAGER_QUEUE = "manager_queue";
     public static final String WORKER_QUEUE = "worker_queue";
 
-    /** SQS limits queue names to 80 characters. */
+    // SQS limits queue names to 80 characters.
     public static final int MAX_NAME_LENGTH = 80;
 
     // ==== TRANSPORT SWITCH =====================================================
@@ -48,32 +45,24 @@ public final class Queues {
         return sanitize("done_ocr_", managerID);
     }
 
-    /**
-     * Returns the queue with this name for the current transport mode, creating it on first
-     * use so that every caller in the JVM shares the same instance.
-     */
+    // Returns the queue with this name for the current transport mode, creating it on first
+    // use so that every caller in the JVM shares the same instance.
     public static Queue get(String queueName) {
         return get(queueName, null);
     }
 
-    /**
-     * Returns the queue with this name. A {@code null} {@code dev} means "use the current
-     * mode" ({@link #isDev()}); otherwise the given mode decides for this call.
-     */
+    // Returns the queue with this name. A null dev means "use the current mode" (isDev());
+    // otherwise the given mode decides for this call.
     public static Queue get(String queueName, Boolean dev) {
         final boolean devFlag = dev == null ? isDev() : dev.booleanValue();
         return QUEUES.computeIfAbsent(queueName, n -> devFlag ? new InMemoryQueue() : new SqsQueue(n));
     }
 
-    /**
-     * Creates the named queue now instead of waiting for the first send/receive.
-     *
-     * In dev mode the in-memory queue only lives in this JVM, so this is just
-     * {@link #get(String)}. In SQS mode {@link SqsQueue} resolves its URL lazily, so a caller
-     * that must guarantee the queue exists before another process starts using it (for example
-     * a client creating its reply queue before sending a request) has to ask for it here.
-     * SQS {@code createQueue} is idempotent, so repeated calls are safe.
-     */
+    // Creates the named queue now instead of waiting for the first send/receive.
+    // In dev mode the in-memory queue only lives in this JVM, so this is just get(String).
+    // In SQS mode SqsQueue resolves its URL lazily, so a caller that must guarantee the queue
+    // exists before another process starts using it (for example a client creating its reply
+    // queue before sending a request) has to ask for it here. createQueue is idempotent.
     public static void create(String queueName) {
         if (isDev()) {
             get(queueName);
@@ -90,19 +79,15 @@ public final class Queues {
         return dev;
     }
 
-    /**
-     * Test/dev seam only: forgets every queue created so far and restores the mode to
-     * {@link #DEV}. Production code must not call this.
-     */
+    // Test/dev seam only: forgets every queue created so far and restores the mode to DEV.
+    // Production code must not call this.
     public static void reset() {
         QUEUES.clear();
         dev = DEV;
     }
 
-    /**
-     * Test/dev seam only: installs {@code queue} under {@code queueName} so
-     * {@link #get(String)} returns it. Production code must not call this.
-     */
+    // Test/dev seam only: installs queue under queueName so get(String) returns it.
+    // Production code must not call this.
     public static void register(String queueName, Queue queue) {
         QUEUES.put(queueName, queue);
     }

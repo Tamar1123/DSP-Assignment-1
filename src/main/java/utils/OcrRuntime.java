@@ -10,27 +10,20 @@ import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 
-/**
- * Prepares the OCR engine without anything installed on the node.
- *
- * The native Tesseract/Leptonica libraries and the language data are shipped inside the jar
- * (see src/main/resources/ocr-native/linux-x86-64 and the tess4j jar's tessdata).
- * On first use they are copied to a temp directory, the shared library closure is loaded in
- * dependency order, and JNA is pointed at the same directory. Afterwards Tess4J loads
- * libtesseract.so like it would load a system installation.
- *
- * Damaged or unsupported resources (for example a non-Linux machine) do not fail here: the
- * caller then falls back to a system installation, exactly as before.
- */
+// Prepares the OCR engine without anything installed on the node.
+// The native Tesseract/Leptonica libraries and the language data ship inside the jar (see
+// src/main/resources/ocr-native/linux-x86-64 and the tess4j jar's tessdata). On first use they
+// are copied to a temp directory, the shared library closure is loaded in dependency order, and
+// JNA is pointed at the same directory. Afterwards Tess4J loads libtesseract.so like a system
+// installation. Damaged or unsupported resources (for example a non-Linux machine) do not fail
+// here: the caller then falls back to a system installation, exactly as before.
 public final class OcrRuntime {
 
-    /** Classpath directory holding the bundled shared objects. */
+    // Classpath directory holding the bundled shared objects.
     static final String NATIVE_RESOURCE_DIR = "ocr-native/linux-x86-64";
 
-    /**
-     * Load order matters: glibc resolves a dependency only if its soname is already loaded.
-     * Order follows the DT_NEEDED graph (leaf libraries first, libtesseract last).
-     */
+    // Load order matters: glibc resolves a dependency only if its soname is already loaded.
+    // Order follows the DT_NEEDED graph (leaf libraries first, libtesseract last).
     static final String[] LIBRARIES = {
             "libgif.so.7",
             "libopenjp2.so.7",
@@ -52,13 +45,9 @@ public final class OcrRuntime {
     private OcrRuntime() {
     }
 
-    /**
-     * Extracts and loads the bundled engine once and returns the directory that holds
-     * eng.traineddata for Tesseract.setDatapath.
-     *
-     * TESSDATA_PREFIX still wins, so a machine with its own trained data can override
-     * the bundled copy.
-     */
+    // Extracts and loads the bundled engine once and returns the directory that holds
+    // eng.traineddata for Tesseract.setDatapath. TESSDATA_PREFIX still wins, so a machine with
+    // its own trained data can override the bundled copy.
     public static synchronized String ensureReady() {
         if (initialized) {
             return tessdataPath;
@@ -91,7 +80,7 @@ public final class OcrRuntime {
         return extracted.getAbsolutePath();
     }
 
-    /** Returns the directory with the bundled libraries, or null when none are bundled. */
+    // Returns the directory with the bundled libraries, or null when none are bundled.
     private static File extractBundledLibs() {
         File dir = new File(System.getProperty("java.io.tmpdir"), "dsp-ocr-native");
         boolean any = false;
@@ -123,7 +112,7 @@ public final class OcrRuntime {
         return message != null && message.contains("already loaded in another classloader");
     }
 
-    /** Copies a classpath resource to target; keeps an existing identical file. */
+    // Copies a classpath resource to target; keeps an existing identical file.
     private static boolean extractResource(String resource, File target) {
         InputStream in = OcrRuntime.class.getClassLoader().getResourceAsStream(resource);
         if (in == null) {

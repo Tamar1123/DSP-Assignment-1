@@ -34,7 +34,7 @@ public class AppTest {
         App.managerDirectory = new ManagerFinder();
     }
 
-    /** Records what the client asked for; no EC2, no tags, no AWS. */
+    // Records what the client asked for; no EC2, no tags, no AWS.
     private static final class FakeDirectory implements ManagerDirectory {
         final List<String> free = new ArrayList<String>();
         final List<Integer> startedWith = new ArrayList<Integer>();

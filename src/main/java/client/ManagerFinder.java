@@ -7,10 +7,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/**
- * Finds a free manager on EC2 (managers tag themselves with their free slots) or launches one.
- * The dev transport has no EC2, so there it finds nothing and starts nothing.
- */
+// Finds a free manager on EC2 (managers tag themselves with their free slots) or launches one.
+// The dev transport has no EC2, so there it finds nothing and starts nothing.
 final class ManagerFinder implements ManagerDirectory {
 
     @Override

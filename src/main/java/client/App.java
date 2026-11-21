@@ -37,7 +37,7 @@ public class App {
     static final String MANAGER_JAR_S3_KEY = AWS.S3_PREFIX + "Manager.jar";
     static final String WORKER_JAR_S3_KEY = AWS.S3_PREFIX + "Worker.jar";
 
-    /** Pause before resending after a busy reply. Tests set it to 0. */
+    // Pause before resending after a busy reply. Tests set it to 0.
     static long retryDelayMillis = 5000L;
 
     static ManagerDirectory managerDirectory = new ManagerFinder();
@@ -94,14 +94,10 @@ public class App {
         }
     }
 
-    /**
-     * Sends the new task and waits for this client's summary.
-     * The reply queue is created first so the manager can never answer into a missing queue.
-     * In a real run the input is uploaded to S3 first and that location is what the manager
-     * receives; the manager cannot read this machine's filesystem.
-     *
-     * @return the S3 location of the summary file
-     */
+    // Sends the new task and waits for this client's summary. The reply queue is created first
+    // so the manager can never answer into a missing queue. In a real run the input is uploaded
+    // to S3 first and that location is what the manager receives; the manager cannot read this
+    // machine's filesystem. Returns the S3 location of the summary file.
     static String run() {
         String localAppID = UUID.randomUUID().toString();
         String clientQueueName = Queues.clientQueueName(localAppID);
@@ -140,11 +136,9 @@ public class App {
         }
     }
 
-    /**
-     * Sends {@code NEW_TASK} and returns the successful {@code DONE_TASK}.
-     * Busy reply (error, no location): the tag was stale, so re-find a manager and resend.
-     * Error with a location field: terminal failure, thrown.
-     */
+    // Sends NEW_TASK and returns the successful DONE_TASK. Busy reply (error, no location): the
+    // tag was stale, so re-find a manager and resend. Error with a location field: terminal
+    // failure, thrown.
     static Message requestTask(Queue managerQueue, Queue inbox, String inboxName, String localAppID,
                                ManagerDirectory directory, String fileLocationToSend) {
         while (true) {
@@ -176,7 +170,7 @@ public class App {
         return await(inbox, queueName, expected, null);
     }
 
-    /** Makes sure a manager is available, then sends the request. */
+    // Makes sure a manager is available, then sends the request.
     private static void sendNewTask(Queue managerQueue, String localAppID,
                                     ManagerDirectory directory, String fileLocationToSend) {
         boolean started = directory.ensureManager(managerClientsN);
@@ -203,7 +197,7 @@ public class App {
         System.out.println("[CLIENT " + java.time.LocalTime.now().withNano(0) + "] " + msg);
     }
 
-    /** Polls {@code inbox} until a message of {@code expected} arrives. */
+    // Polls inbox until a message of expected arrives.
     private static Message await(Queue inbox, String queueName, Message.MessageType expected, ManagerDirectory directory) {
         log("Waiting on queue " + queueName + " for " + expected);
         int polls = 0;
@@ -239,10 +233,8 @@ public class App {
         aws.createBucketIfNotExists(aws.bucketName);
     }
 
-    /**
-     * Starts one manager with {@code freeSlots} free client slots. The instance downloads the
-     * jar uploaded by {@link #setup()} and runs {@code server.Manager} in the background.
-     */
+    // Starts one manager with freeSlots free client slots. The instance downloads the jar
+    // uploaded by setup() and runs server.Manager in the background.
 static void createEC2(int freeSlots) {
     S3Client s3 = aws.getS3();
     uploadJarToS3(s3, aws.bucketName, MANAGER_JAR_LOCAL_PATH, MANAGER_JAR_S3_KEY);

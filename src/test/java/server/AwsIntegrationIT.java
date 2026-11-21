@@ -10,25 +10,19 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 
-/**
- * AWS Learner Lab integration smoke test for the Manager and Worker.
- *
- * Prerequisites:
- * 1. Get Learner Lab credentials from the lab console:
- *      export AWS_ACCESS_KEY_ID=...
- *      export AWS_SECRET_ACCESS_KEY=...
- *      export AWS_SESSION_TOKEN=...
- *    They expire after ~4 hours.
- * 2. Verify the bucket "dsp1-only-together2-654654248213" (us-west-2) and AMI
- *    "ami-00e95a9222311e8ed" (us-east-1) still exist.
- * 3. This test does NOT use the client — it sends messages directly to the
- *    manager queue and reads replies from a client queue it creates itself.
- *
- * Run with:
- *   mvn test -Dtest=AwsIntegrationIT -Dgroups=integration
- *
- * Never runs under "mvn -o test".
- */
+// AWS Learner Lab integration smoke test for the Manager and Worker.
+// Prerequisites:
+// 1. Get Learner Lab credentials from the lab console:
+//      export AWS_ACCESS_KEY_ID=...
+//      export AWS_SECRET_ACCESS_KEY=...
+//      export AWS_SESSION_TOKEN=...
+//    They expire after ~4 hours.
+// 2. Verify the bucket "dsp1-only-together2-654654248213" (us-west-2) and AMI
+//    "ami-00e95a9222311e8ed" (us-east-1) still exist.
+// 3. This test does NOT use the client: it sends messages directly to the manager queue and
+//    reads replies from a client queue it creates itself.
+// Run with: mvn test -Dtest=AwsIntegrationIT -Dgroups=integration
+// Never runs under "mvn -o test".
 @Tag("integration")
 public class AwsIntegrationIT {
 

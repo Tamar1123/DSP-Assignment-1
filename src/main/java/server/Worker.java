@@ -17,13 +17,10 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.UUID;
 
-/**
- * A worker: takes one image task at a time from the shared worker queue, OCRs the image and
- * reports the text to the manager that issued the task.
- *
- * Workers share one queue, so any worker may take any task. A completed task is deleted after
- * its reply is sent; a task whose reply could not be sent is released so it is delivered again.
- */
+// A worker: takes one image task at a time from the shared worker queue, OCRs the image and
+// reports the text to the manager that issued the task.
+// Workers share one queue, so any worker may take any task. A completed task is deleted after
+// its reply is sent; a task whose reply could not be sent is released so it is delivered again.
 public class Worker implements Runnable {
     private static final int RECEIVE_MAX = 1;
     private static final int RECEIVE_WAIT_SECONDS = 1;
@@ -70,21 +67,16 @@ public class Worker implements Runnable {
         return running;
     }
 
-    /**
-     * Processes one receive batch from the worker queue. This is the test seam;
-     * {@link #run()} calls it in a loop until {@link #shutdown()}.
-     */
+    // Processes one receive batch from the worker queue. This is the test seam: run() calls it
+    // in a loop until shutdown().
     public void startOnce() {
         for (Received received : workerQueue.receive(RECEIVE_MAX, RECEIVE_WAIT_SECONDS)) {
             handle(received);
         }
     }
 
-    /**
-     * Produces the text for one image. The real implementation has two steps: download the
-     * image at {@code imageURL} to a local file, then return
-     * {@link #processOne(String) processOne(localFile.getAbsolutePath())}.
-     */
+    // Produces the text for one image: download the image at imageURL to a local file, then
+    // return processOne(localFile.getAbsolutePath()).
     public String identify(String imageURL) throws Exception {
         if (Queues.isDev() && (imageURL.startsWith("http://img") || imageURL.startsWith("http://a") || imageURL.startsWith("http://b"))) {
             return "[dev] OCR of " + imageURL;
@@ -106,14 +98,12 @@ public class Worker implements Runnable {
         }
     }
 
-    /** Max redirect hops we are willing to follow. */
+    // Max redirect hops we are willing to follow.
     static final int MAX_REDIRECTS = 5;
 
-    /**
-     * Downloads the image at {@code imageURL} to a temp file, following up to {@link #MAX_REDIRECTS}
-     * redirects manually. The extension is derived from the final URL.
-     * Package-private so {@code WorkerTest} can exercise it without OCR.
-     */
+    // Downloads the image at imageURL to a temp file, following up to MAX_REDIRECTS redirects
+    // manually; the extension comes from the final URL. Package-private so WorkerTest can
+    // exercise it without OCR.
     Path downloadImage(String imageURL) throws Exception {
         URL url = new URL(imageURL);
 

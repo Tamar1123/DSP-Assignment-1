@@ -12,12 +12,9 @@ import software.amazon.awssdk.services.sqs.model.SendMessageBatchResponse;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * {@link Queue} backed by a real AWS SQS queue.
- *
- * The queue URL is resolved lazily on first use, so constructing an instance (for example,
- * from {@code Queues.get(name, false)}) never contacts AWS and needs no credentials.
- */
+// Queue backed by a real AWS SQS queue. The queue URL is resolved lazily on first use, so
+// constructing an instance (for example, from Queues.get(name, false)) never contacts AWS and
+// needs no credentials.
 public class SqsQueue implements Queue {
     private final String queueName;
     private volatile String queueUrl;
@@ -58,7 +55,7 @@ public class SqsQueue implements Queue {
         }
     }
 
-    /** Splits messages into ordered batches accepted by SQS sendMessageBatch. */
+    // Splits messages into ordered batches accepted by SQS sendMessageBatch.
     static List<List<Message>> chunkMessages(List<Message> messages) {
         List<List<Message>> chunks = new ArrayList<List<Message>>();
         for (int start = 0; start < messages.size(); start += 10) {
@@ -135,7 +132,7 @@ public class SqsQueue implements Queue {
                 .build());
     }
 
-    /** Resolves the queue URL once, thread-safely, on first use. */
+    // Resolves the queue URL once, thread-safely, on first use.
     private String url() {
         String resolved = queueUrl;
         if (resolved == null) {

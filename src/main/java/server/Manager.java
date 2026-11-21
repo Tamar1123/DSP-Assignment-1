@@ -20,25 +20,22 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * Routes client work to workers and answers each client once its images are OCRed.
- *
- * Two threads: the main Router receives and admits; one IoWorker does all blocking calls.
- * The manager never OCRs or downloads images.
- */
+// Routes client work to workers and answers each client once its images are OCRed.
+// Two threads: the main Router receives and admits, one IoWorker does all blocking calls.
+// The manager never OCRs or downloads images.
 public class Manager implements Runnable {
-    /** Set by the -D argument; also on when the client debug flag is set (tests). */
+    // Set by -D; also on with the client debug flag (tests).
     static volatile boolean debug = false;
     private static final int RECEIVE_MAX = 10;
     private static final int RECEIVE_WAIT_SECONDS = 1;
-    /** Visibility delay for a NEW_TASK the full manager gives back, so it is not busy-looped. */
+    // Visibility delay for a NEW_TASK a full manager gives back, so it is not busy-looped.
     private static final int REQUEUE_DELAY_SECONDS = 5;
-    /** NEW_IMAGE_TASK messages are sent in batches of this size. */
+    // NEW_IMAGE_TASK batch size.
     private static final int FAN_OUT_BATCH = 10;
-    /** How often run() reconciles the worker set and launches crash replacements. */
+    // How often run() reconciles the worker set and launches crash replacements.
     private static final long WORKER_RECONCILE_INTERVAL_MILLIS = 10000L;
 
-    /** Maximum EC2 instances (manager plus workers) the system may run. */
+    // Max EC2 instances (managers plus workers) the system may run.
     static final int MAX_INSTANCES = 9;
 
     private static final String WORKER_TAG = "worker";
@@ -50,36 +47,36 @@ public class Manager implements Runnable {
     private final Queue workerQueue;
     private final Queue doneOcrQueue;
 
-    /** manager-clients-n: maximum clients this manager serves at once. */
+    // manager-clients-n: clients this manager serves at once.
     private final int maxClients;
-    /** worker-files-n: target number of input files per worker. */
+    // worker-files-n: target input files per worker.
     private final int workerFilesN;
 
-    /** Worker instance IDs this manager launched; the source of truth for its own workers. */
+    // Worker instance IDs this manager launched; the source of truth for its workers.
     private final Set<String> workerInstanceIds = ConcurrentHashMap.newKeySet();
 
-    /** Admitted clients keyed by localAppID; its size is the load. */
+    // Admitted clients keyed by localAppID; its size is the load.
     private final Map<String, ClientTask> clientTasks = new ConcurrentHashMap<String, ClientTask>();
     private final AtomicInteger servedClients = new AtomicInteger(); // finished clients
     private final AtomicInteger rejectedClients = new AtomicInteger(); // full-manager requeues
 
-    /** Runs every blocking job, finishes before fan-outs, on one thread. */
+    // Runs every blocking job, finishes before fan-outs, on one thread.
     private final IoWorker ioWorker;
 
     private volatile boolean running = true;
-    /** Set by the first TERMINATE: stop admitting, keep draining until clientTasks is empty. */
+    // Set by the first TERMINATE: stop admitting, drain until clientTasks is empty.
     private final AtomicBoolean terminating = new AtomicBoolean();
-    /** Last time reconcileWorkersIfDue actually reconciled. */
+    // Last time reconcileWorkersIfDue actually reconciled.
     private volatile long lastReconcileMillis = System.currentTimeMillis();
-    /** The client that asked to terminate; it gets the ack even if already finished. */
+    // The client that asked to terminate; it gets the ack even if already finished.
     private volatile String terminateRequester;
 
-    /** Test helper: fixed manager id, and therefore fixed queue names. */
+    // Test helper: fixed manager id, and therefore fixed queue names.
     public Manager(String managerID) {
         this(managerID, 10, 1);
     }
 
-    /** maxClients is manager-clients-n; tasksPerWorker is worker-files-n. */
+    // maxClients is manager-clients-n; tasksPerWorker is worker-files-n.
     public Manager(String managerID, int maxClients, int tasksPerWorker) {
         if (maxClients < 1) {
             throw new IllegalArgumentException("manager-clients-n must be at least 1, got " + maxClients);
@@ -104,7 +101,7 @@ public class Manager implements Runnable {
         return running;
     }
 
-    /** True while this manager has a free client slot (fewer than maxClients admitted). */
+    // True while this manager has a free client slot.
     public boolean hasCapacity() {
         return clientTasks.size() < maxClients;
     }
@@ -121,10 +118,8 @@ public class Manager implements Runnable {
         return rejectedClients.get();
     }
 
-    /**
-     * One router tick. Drains done-OCR without waiting, then polls requests. A full manager
-     * requeues the request on manager_queue; duplicates are ignored. No S3 or EC2 call here.
-     */
+    // One router tick: drains done-OCR without waiting, then polls requests. A full manager
+    // requeues the request on manager_queue; duplicates are ignored. No S3 or EC2 call here.
     public void routerTick() {
         List<Received> results = doneOcrQueue.receive(RECEIVE_MAX, 0);
         if (!results.isEmpty()) {
@@ -145,7 +140,7 @@ public class Manager implements Runnable {
         }
     }
 
-    /** Test seam: one router tick, every pending IoWorker job inline, then a reconcile. */
+    // Test seam: one router tick, every pending IoWorker job inline, then a reconcile.
     public void startOnce() {
         routerTick();
         runPendingIo();
@@ -153,22 +148,22 @@ public class Manager implements Runnable {
         reconcileWorkers();
     }
 
-    /** Test seam: runs every pending IoWorker job inline, finishes first. */
+    // Test seam: runs every pending IoWorker job inline, finishes first.
     public void runPendingIo() {
         ioWorker.runAll();
     }
 
-    /** Test seam: runs one pending IoWorker job; false when none is queued. */
+    // Test seam: runs one pending IoWorker job; false when none is queued.
     public boolean runOnePendingJob() {
         return ioWorker.runOne();
     }
 
-    /** Runs queued finishes now; fan-out calls this between batches. */
+    // Runs queued finishes now; fan-out calls this between batches.
     public void runPendingFinishes() {
         ioWorker.runPendingFinishes();
     }
 
-    /** Starts the IoWorker plus the Router loop. args: manager-clients-n, worker-files-n. */
+    // Starts the IoWorker plus the Router loop. args: manager-clients-n, worker-files-n.
     public static void main(String[] args) {
         Queues.setDev(false);
         for (String arg : args) {
@@ -200,7 +195,7 @@ public class Manager implements Runnable {
         System.out.println("[MANAGER] Manager stopped.");
     }
 
-    /** Parses a positive integer, or returns defaultValue when absent. */
+    // Parses a positive integer, or returns defaultValue when absent.
     static int parseArg(String[] args, int index, String name, int defaultValue) {
         if (args == null || args.length <= index) {
             return defaultValue;
@@ -217,7 +212,7 @@ public class Manager implements Runnable {
         return value;
     }
 
-    /** ceil(urlCount / workerFilesN); zero when there are no URLs. */
+    // ceil(urlCount / workerFilesN); zero with no URLs.
     static int workersNeeded(int urlCount, int workerFilesN) {
         if (workerFilesN < 1) {
             throw new IllegalArgumentException("worker-files-n must be at least 1, got " + workerFilesN);
@@ -313,12 +308,9 @@ public class Manager implements Runnable {
         }
     }
 
-    /**
-     * Admits a client and submits its fan-out to the IoWorker. No S3 or EC2 call here.
-     * Returns true when the request must go back on manager_queue (no free slot): the caller
-     * releases it with a delay instead of deleting it. Terminating and duplicate requests are
-     * handled here and return false.
-     */
+    // Admits a client and submits its fan-out to the IoWorker. No S3 or EC2 call here.
+    // Returns true when the request must go back on manager_queue (no free slot): the caller
+    // releases it with a delay. Terminating and duplicate requests are handled here, return false.
     private boolean handleNewTask(Message msg) {
         String localAppID = msg.getLocalAppID();
         if (terminating.get()) {
@@ -345,7 +337,7 @@ public class Manager implements Runnable {
         return false;
     }
 
-    /** Records a result and queues finish when the last one arrives. */
+    // Records a result and queues finish when the last one arrives.
     private void handleDoneOcr(Message msg) {
         ClientTask task = clientTasks.get(msg.getLocalAppID());
         if (task == null) {
@@ -366,7 +358,7 @@ public class Manager implements Runnable {
         }
     }
 
-    /** Stops admission and records the requester; the drain and the ack happen later. */
+    // Stops admission and records the requester; the drain and ack happen later.
     private void handleTerminate(Message msg) {
         if (!terminating.compareAndSet(false, true)) {
             logDebug("already terminating; ignoring duplicate terminate");
@@ -376,11 +368,8 @@ public class Manager implements Runnable {
         logDebug("terminating: draining " + clientTasks.size() + " client(s)");
     }
 
-    /**
-     * Completes termination once every admitted client has its answer: stop this manager's own
-     * workers, drop the done-OCR queue, ack the requester (even if it already finished and left
-     * clientTasks), and stop the loop.
-     */
+    // Completes termination once every admitted client has its answer: stop this manager's own
+    // workers, drop the done-OCR queue, ack the requester (even if it already finished), stop.
     private void finishTerminationIfDrained() {
         if (!running || !terminating.get() || !clientTasks.isEmpty()) {
             return;
@@ -400,10 +389,8 @@ public class Manager implements Runnable {
         }
     }
 
-    /**
-     * Starts the workers needed for the outstanding images, sized against the whole fleet and
-     * capped by the global instance limit.
-     */
+    // Starts the workers needed for the outstanding images, sized against the whole fleet and
+    // capped by the global instance limit.
     protected void ensureWorkers(int outstanding) {
         if (Queues.isDev() || outstanding <= 0) {
             return;
@@ -428,30 +415,30 @@ public class Manager implements Runnable {
         }
     }
 
-    /** Live workers fleet-wide, all managers included; protected so tests never reach AWS. */
+    // Live workers fleet-wide, all managers included; protected so tests never reach AWS.
     protected int liveWorkerCount() {
         return AWS.getInstance().runningWorkerCount();
     }
 
-    /** Live instances fleet-wide (managers plus workers); protected so tests never reach AWS. */
+    // Live instances fleet-wide (managers plus workers); protected so tests never reach AWS.
     protected int liveInstanceCount() {
         return AWS.getInstance().runningInstanceCount();
     }
 
-    /** Launches workers and records their IDs as this manager's workers. */
+    // Launches workers and records their IDs as this manager's workers.
     protected List<String> launchWorkers(int count) {
         List<String> launched = launchWorkerInstances(count);
         workerInstanceIds.addAll(launched);
         return launched;
     }
 
-    /** Launches worker instances; protected so tests can supply IDs without reaching AWS. */
+    // Launches worker instances; protected so tests can supply IDs without reaching AWS.
     protected List<String> launchWorkerInstances(int count) {
         AWS aws = AWS.getInstance();
         return aws.createEC2Instances(workerLaunchScript(aws.bucketName), WORKER_TAG, count);
     }
 
-    /** User-data script for one worker; package-private so tests can check it without AWS. */
+    // User-data script for one worker; package-private so tests can check it without AWS.
     String workerLaunchScript(String bucketName) {
         return "#!/bin/bash\n"
                 + "set -e\n"
@@ -490,7 +477,7 @@ public class Manager implements Runnable {
         return total;
     }
 
-    /** Fails a task once: error reply, remove it, free the slot. IoWorker only. */
+    // Fails a task once: error reply, remove it, free the slot. IoWorker only.
     private void failTask(ClientTask task, String description) {
         if (!task.done.compareAndSet(false, true)) {
             return; // already answered
@@ -508,12 +495,12 @@ public class Manager implements Runnable {
         updateFreeSlots();
     }
 
-    /** Publishes free slots as the EC2 free tag; a hint that may lag. IoWorker only. */
+    // Publishes free slots as the EC2 free tag; a hint that may lag. IoWorker only.
     private void updateFreeSlots() {
         publishFreeSlots(maxClients - clientTasks.size());
     }
 
-    /** Protected seam for the free-slot tag write; no-op in dev so tests never touch AWS. */
+    // Protected seam for the free-slot tag write; no-op in dev so tests never reach AWS.
     protected void publishFreeSlots(int free) {
         if (Queues.isDev()) {
             return;
@@ -585,7 +572,7 @@ public class Manager implements Runnable {
         return urls;
     }
 
-    /** Terminates only the workers this manager launched; never calls AWS in dev mode. */
+    // Terminates only the workers this manager launched; never calls AWS in dev mode.
     private void stopWorkers() {
         if (Queues.isDev()) {
             return;
@@ -604,20 +591,18 @@ public class Manager implements Runnable {
         }
     }
 
-    /** Requests termination through AWS; protected so termination can be tested offline. */
+    // Requests termination through AWS; protected so termination can be tested offline.
     protected void terminateInstances(List<String> instanceIds) {
         AWS.getInstance().terminateInstances(instanceIds);
     }
 
-    /** Current EC2 state per worker ID; protected so reconcile can be tested offline. */
+    // Current EC2 state per worker ID; protected so reconcile can be tested offline.
     protected Map<String, String> workerStates(Collection<String> instanceIds) {
         return AWS.getInstance().instanceStates(instanceIds);
     }
 
-    /**
-     * Drops workers that are gone or stopped and launches replacements for outstanding work.
-     * Runs at most every WORKER_RECONCILE_INTERVAL_MILLIS; never while terminating.
-     */
+    // Drops workers that are gone or stopped and launches replacements for outstanding work.
+    // Runs at most every WORKER_RECONCILE_INTERVAL_MILLIS; never while terminating.
     protected void reconcileWorkers() {
         if (terminating.get() || Queues.isDev()) {
             return;
@@ -640,17 +625,14 @@ public class Manager implements Runnable {
         }
     }
 
-    /**
-     * EC2 states in which a worker can no longer process messages. A worker in
-     * "shutting-down" is still terminating (it may be a cap kill, not a crash) and is
-     * counted as live until EC2 removes it, so it is not dead here.
-     */
+    // EC2 states in which a worker can no longer process messages. A worker in "shutting-down"
+    // may be a cap kill, not a crash, and still counts as live until EC2 removes it.
     private static boolean isDeadWorkerState(String state) {
         return state.equals("terminated")
                 || state.equals("stopped");
     }
 
-    /** Reconciles at most once per WORKER_RECONCILE_INTERVAL_MILLIS. */
+    // Reconciles at most once per WORKER_RECONCILE_INTERVAL_MILLIS.
     private void reconcileWorkersIfDue() {
         long now = System.currentTimeMillis();
         if (now - lastReconcileMillis < WORKER_RECONCILE_INTERVAL_MILLIS) {
@@ -660,12 +642,12 @@ public class Manager implements Runnable {
         reconcileWorkers();
     }
 
-    /** Test seam: the IDs of the workers this manager launched. */
+    // Test seam: the IDs of the workers this manager launched.
     protected Set<String> getWorkerInstanceIds() {
         return workerInstanceIds;
     }
 
-    /** Deletes the per-manager done-OCR queue in AWS mode; a no-op in dev. */
+    // Deletes the per-manager done-OCR queue in AWS mode; a no-op in dev.
     protected void deleteDoneOcrQueueIfAws() {
         if (Queues.isDev()) {
             return;
@@ -688,7 +670,7 @@ public class Manager implements Runnable {
         }
     }
 
-    /** Reads the input, sends image tasks in batches, drains finishes between batches. */
+    // Reads the input, sends image tasks in batches, drains finishes between batches.
     private final class FanOutJob extends IoWorker.Job {
         private final ClientTask task;
 
@@ -729,7 +711,7 @@ public class Manager implements Runnable {
         }
     }
 
-    /** Answers once: summary, DONE_TASK, remove the task, free the slot. */
+    // Answers once: summary, DONE_TASK, remove the task, free the slot.
     private final class FinishJob extends IoWorker.Job {
         private final ClientTask task;
 
@@ -776,17 +758,17 @@ public class Manager implements Runnable {
         }
     }
 
-    /** Per-client work while its images are OCRed. */
+    // Per-client work while its images are OCRed.
     static final class ClientTask {
         final String localAppID;
         final String inputFileLocation;
-        /** First text per URL wins. */
+        // First text per URL wins.
         final ConcurrentHashMap<String, String> texts = new ConcurrentHashMap<String, String>();
-        /** Image tasks not yet answered. */
+        // Image tasks not yet answered.
         final AtomicInteger outstanding = new AtomicInteger();
-        /** Answers the client exactly once. */
+        // Answers the client exactly once.
         final AtomicBoolean done = new AtomicBoolean(false);
-        /** Input order, set before the first image task is sent. */
+        // Input order, set before the first image task is sent.
         volatile List<String> urls = Collections.emptyList();
 
         ClientTask(String localAppID, String inputFileLocation) {
