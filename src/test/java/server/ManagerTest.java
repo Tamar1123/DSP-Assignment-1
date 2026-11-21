@@ -229,8 +229,8 @@ public class ManagerTest {
         // launches none, so the two managers together never run two full worker sets.
         final List<Integer> launchCounts = new ArrayList<Integer>();
         final AtomicInteger fleetWorkers = new AtomicInteger(0);
-        Manager a = fleetAwareManager("mgr-fleet-a", launchCounts, fleetWorkers);
-        Manager b = fleetAwareManager("mgr-fleet-b", launchCounts, fleetWorkers);
+        Manager a = fleetAwareManager("mgr-fleet-a", launchCounts, fleetWorkers, 2);
+        Manager b = fleetAwareManager("mgr-fleet-b", launchCounts, fleetWorkers, 2);
 
         Queues.setDev(false);
         try {
@@ -249,13 +249,13 @@ public class ManagerTest {
     public void noLaunchWhenTheFleetAlreadyHasEnoughWorkers() {
         final List<Integer> launchCounts = new ArrayList<Integer>();
         final AtomicInteger fleetWorkers = new AtomicInteger(6); // 6 workers already live fleet-wide
-        Manager a = fleetAwareManager("mgr-fleet-a2", launchCounts, fleetWorkers);
-        Manager b = fleetAwareManager("mgr-fleet-b2", launchCounts, fleetWorkers);
+        Manager a = fleetAwareManager("mgr-fleet-a2", launchCounts, fleetWorkers, 2);
+        Manager b = fleetAwareManager("mgr-fleet-b2", launchCounts, fleetWorkers, 2);
 
         Queues.setDev(false);
         try {
-            a.ensureWorkers(6); // 12 fleet URLs / 2 per worker = 6 needed = 6 live: nothing to add
-            b.ensureWorkers(6);
+            a.ensureWorkers(12); // 12 fleet URLs / 2 per worker = 6 needed = 6 live: nothing to add
+            b.ensureWorkers(12);
         } finally {
             Queues.setDev(true);
         }
@@ -327,9 +327,28 @@ public class ManagerTest {
                 "a fleet at MAX_INSTANCES must not launch any worker");
     }
 
+    @Test
+    public void twoManagersRespectGlobalCapHeadroom() {
+        final List<Integer> launchCounts = new ArrayList<Integer>();
+        final AtomicInteger fleetWorkers = new AtomicInteger(0);
+        Manager a = fleetAwareManager("mgr-fleet-cap-a", launchCounts, fleetWorkers, 2);
+
+        Queues.setDev(false);
+        try {
+            // 20 images / 2 per worker = 10 needed; two live managers leave 7 slots.
+            a.ensureWorkers(20);
+        } finally {
+            Queues.setDev(true);
+        }
+
+        assertEquals(Arrays.asList(7), launchCounts,
+                "the global headroom after two managers must bound the launch");
+        assertEquals(7, fleetWorkers.get());
+    }
+
     /** Manager whose live counts read a simulated fleet counter that launches grow. */
     private Manager fleetAwareManager(final String id, final List<Integer> launchCounts,
-            final AtomicInteger fleetWorkers) {
+            final AtomicInteger fleetWorkers, final int managerCount) {
         return new Manager(id, 10, 2) {
             @Override
             protected int liveWorkerCount() {
@@ -338,7 +357,7 @@ public class ManagerTest {
 
             @Override
             protected int liveInstanceCount() {
-                return fleetWorkers.get() + 1; // the workers plus this manager
+                return fleetWorkers.get() + managerCount;
             }
 
             @Override
@@ -667,6 +686,10 @@ public class ManagerTest {
                 @Override
                 protected void ensureWorkers(int outstanding) {
                     // SQS mode must not reach EC2 from the offline suite.
+                }
+                @Override
+                protected void publishFreeSlots(int free) {
+                    // The free-slot tag is also an AWS call in non-dev mode.
                 }
             };
             Queues.get(Queues.managerQueueName())
@@ -1112,6 +1135,21 @@ public class ManagerTest {
             protected List<String> launchWorkerInstances(int count) {
                 launchCounts.add(count);
                 return Collections.<String>emptyList();
+            }
+
+            @Override
+            protected int liveWorkerCount() {
+                return 0;
+            }
+
+            @Override
+            protected int liveInstanceCount() {
+                return 1; // this manager only
+            }
+
+            @Override
+            protected void publishFreeSlots(int free) {
+                // Reconcile tests run in AWS mode but must not publish EC2 tags.
             }
         };
     }
