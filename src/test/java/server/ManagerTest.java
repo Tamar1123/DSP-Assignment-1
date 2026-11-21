@@ -86,16 +86,77 @@ public class ManagerTest {
     }
 
     @Test
-    public void terminateAcksServedClientsAndStops() throws Exception {
-        // app-5 is still in flight (one image outstanding), so it is in the map and gets the ack.
+    public void terminateDrainsOutstandingWorkBeforeStopping() throws Exception {
+        // app-5 still has one image outstanding: the manager must not stop or ack yet.
         String in = inputFile("http://a");
         Manager m = new Manager("mgr-5");
         Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-5"));
+        m.startOnce();
+
         Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-5"));
         m.startOnce();
-        List<Received> acks = Queues.get(Queues.clientQueueName("app-5")).receive(10, 2);
-        assertTrue(acks.stream().anyMatch(r -> r.getMessage().getType() == Message.MessageType.TERMINATE));
+        assertTrue(m.isRunning(), "must wait for the outstanding image");
+        assertTrue(Queues.get(Queues.clientQueueName("app-5")).receive(10, 1).isEmpty());
+
+        Queues.get(Queues.doneOcrQueueName("mgr-5"))
+                .send(Message.createDoneOCR("http://a", "text", "app-5"));
+        m.startOnce();
+        m.startOnce();
+        List<Received> replies = Queues.get(Queues.clientQueueName("app-5")).receive(10, 1);
+        assertTrue(replies.stream().anyMatch(r -> r.getMessage().getType() == Message.MessageType.DONE_TASK));
+        assertTrue(replies.stream().anyMatch(r -> r.getMessage().getType() == Message.MessageType.TERMINATE));
         assertFalse(m.isRunning());
+    }
+
+    @Test
+    public void terminateAcksClientThatAlreadyFinished() throws Exception {
+        // Bug 2: finish() removes the client, so handleTerminate used to find nobody to ack.
+        String in = inputFile("http://a");
+        Manager m = new Manager("mgr-12");
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-12"));
+        m.startOnce();
+        Queues.get(Queues.doneOcrQueueName("mgr-12"))
+                .send(Message.createDoneOCR("http://a", "text", "app-12"));
+        m.startOnce();
+        assertEquals(0, m.getActiveClients());
+        assertEquals(1, Queues.get(Queues.clientQueueName("app-12")).receive(10, 1).size());
+
+        Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-12"));
+        m.startOnce();
+        List<Received> acks = Queues.get(Queues.clientQueueName("app-12")).receive(10, 1);
+        assertEquals(1, acks.size());
+        assertEquals(Message.MessageType.TERMINATE, acks.get(0).getMessage().getType());
+        assertFalse(m.isRunning());
+    }
+
+    @Test
+    public void terminatingManagerRejectsNewAdmission() throws Exception {
+        String in = inputFile("http://a");
+        Manager m = new Manager("mgr-13");
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-13a"));
+        m.startOnce();
+
+        Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-13a"));
+        m.startOnce();
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-13b"));
+        m.startOnce();
+
+        List<Received> busy = Queues.get(Queues.clientQueueName("app-13b")).receive(1, 1);
+        assertEquals(1, busy.size());
+        assertEquals(Message.MessageType.DONE_TASK, busy.get(0).getMessage().getType());
+        assertTrue(busy.get(0).getMessage().isError());
+        assertEquals(1, m.getActiveClients(), "the draining client is untouched");
+        assertTrue(m.isRunning());
+    }
+
+    @Test
+    public void terminateIsIdempotent() throws Exception {
+        Manager m = new Manager("mgr-14");
+        Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-14"));
+        Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-14"));
+        m.startOnce();
+        assertFalse(m.isRunning());
+        assertEquals(1, Queues.get(Queues.clientQueueName("app-14")).receive(10, 1).size());
     }
 
     @Test
@@ -253,6 +314,10 @@ public class ManagerTest {
                 @Override
                 protected void writeSummary(ClientTask task, String summaryKey) {
                     assertEquals("assignment1/summaries/app-1.txt", summaryKey);
+                }
+                @Override
+                protected void ensureWorkers(int outstanding) {
+                    // SQS mode must not reach EC2 from the offline suite.
                 }
             };
             Queues.get(Queues.managerQueueName())

@@ -26,7 +26,8 @@ public class AWS {
     private final SqsClient sqs;
     private final Ec2Client ec2;
 
-    public static String ami = "ami-0046c29ee3573ac7f";
+    /** Ubuntu 22.04 LTS (us-east-1); the node scripts install Java, Tesseract and the AWS CLI. */
+    public static String ami = "ami-00b13f11600160c10";
 
     public static Region region1 = Region.US_EAST_1;
     public static Region region2 = Region.US_EAST_1;

@@ -114,14 +114,13 @@ public class App {
             if (!Queues.isDev()) {
                 fileLocationToSend = uploadFileToS3(aws.getS3(), aws.bucketName, inputFileName, localAppID);
             }
-            if (debug)
-                System.out.println("[DEBUG] Sending NEW_TASK for " + fileLocationToSend + " as " + localAppID);
-            Message done = requestTask(managerQueue, inbox, localAppID, managerDirectory, fileLocationToSend);
+            log("Client " + localAppID + " reply queue=" + clientQueueName
+                    + " manager queue=" + Queues.managerQueueName());
+            Message done = requestTask(managerQueue, inbox, clientQueueName, localAppID, managerDirectory, fileLocationToSend);
             if (terminate) {
-                if (debug)
-                    System.out.println("[DEBUG] Sending TERMINATE for " + localAppID);
+                log("Sending TERMINATE to " + Queues.managerQueueName());
                 managerQueue.send(Message.createTerminate(localAppID));
-                await(inbox, Message.MessageType.TERMINATE);
+                await(inbox, clientQueueName, Message.MessageType.TERMINATE);
             }
             return done.getOutputFileLocation();
         } finally {
@@ -146,11 +145,11 @@ public class App {
      * Busy reply (error, no location): the tag was stale, so re-find a manager and resend.
      * Error with a location field: terminal failure, thrown.
      */
-    static Message requestTask(Queue managerQueue, Queue inbox, String localAppID,
+    static Message requestTask(Queue managerQueue, Queue inbox, String inboxName, String localAppID,
                                ManagerDirectory directory, String fileLocationToSend) {
         while (true) {
             sendNewTask(managerQueue, localAppID, directory, fileLocationToSend);
-            Message reply = await(inbox, Message.MessageType.DONE_TASK);
+            Message reply = await(inbox, inboxName, Message.MessageType.DONE_TASK);
             if (!reply.isError()) {
                 return reply;
             }
@@ -170,7 +169,9 @@ public class App {
         boolean started = directory.ensureManager(managerClientsN);
         if (debug)
             System.out.println("[DEBUG] " + (started ? "Started a manager" : "Using a free manager"));
+        log("Sending NEW_TASK (" + fileLocationToSend + ") to " + Queues.managerQueueName());
         managerQueue.send(Message.createNewTask(fileLocationToSend, localAppID));
+        log("NEW_TASK sent");
     }
 
     private static void pauseBeforeRetry() {
@@ -182,15 +183,32 @@ public class App {
         }
     }
 
+    private static void log(String msg) {
+        if (!debug) {
+            return;
+        }
+        System.out.println("[CLIENT " + java.time.LocalTime.now().withNano(0) + "] " + msg);
+    }
+
     /** Polls {@code inbox} until a message of {@code expected} arrives. */
-    private static Message await(Queue inbox, Message.MessageType expected) {
+    private static Message await(Queue inbox, String queueName, Message.MessageType expected) {
+        log("Waiting on queue " + queueName + " for " + expected);
+        int polls = 0;
         while (true) {
             List<Received> received = inbox.receive(1, 20);
+            polls++;
+            if (received.isEmpty() && polls % 3 == 0) {
+                log("Still waiting on " + queueName + " for " + expected + " (" + polls + " empty/other polls)");
+            }
             for (Received r : received) {
+                log("Received " + r.getMessage().getType() + " on " + queueName
+                        + " error=" + r.getMessage().isError()
+                        + " location=" + r.getMessage().getOutputFileLocation());
                 if (r.getMessage().getType() == expected) {
                     inbox.delete(r);
                     return r.getMessage();
                 }
+                log("Not " + expected + ", releasing it back to " + queueName);
                 // Not ours to consume: put it back.
                 inbox.release(r);
             }
@@ -214,15 +232,21 @@ public class App {
         uploadJarToS3(s3, aws.bucketName, MANAGER_JAR_LOCAL_PATH, MANAGER_JAR_S3_KEY);
         uploadJarToS3(s3, aws.bucketName, WORKER_JAR_LOCAL_PATH, WORKER_JAR_S3_KEY);
 
+        String bootstrap =
+                "export DEBIAN_FRONTEND=noninteractive\n" +
+                "apt-get update -y >/dev/console 2>&1\n" +
+                "apt-get install -y --no-install-recommends openjdk-17-jre-headless tesseract-ocr tesseract-ocr-eng awscli >/dev/console 2>&1\n" +
+                "export TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata\n";
         String ec2Script = "#!/bin/bash\n" +
+                bootstrap +
                 "TOKEN=$(curl -X PUT \"http://169.254.169.254/latest/api/token\" -H \"X-aws-ec2-metadata-token-ttl-seconds: 21600\" -s)\n" +
                 "INSTANCE_ID=$(curl -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/instance-id -s)\n" +
-                "aws s3 cp s3://" + aws.bucketName + "/" + MANAGER_JAR_S3_KEY + " /home/ec2-user/Manager.jar\n" +
-                "JAVA_BIN=$(ls /usr/lib/jvm/*1.8*/bin/java 2>/dev/null | head -n 1)\n" +
-                "[ -z \"$JAVA_BIN\" ] && JAVA_BIN=$(command -v java)\n" +
+                "aws s3 cp s3://" + aws.bucketName + "/" + MANAGER_JAR_S3_KEY + " /home/ubuntu/Manager.jar\n" +
+                "JAVA_BIN=$(command -v java)\n" +
                 "echo \"[BOOTSTRAP] Using JAVA_BIN=$JAVA_BIN\" > /dev/console\n" +
                 "\"$JAVA_BIN\" -version > /dev/console 2>&1\n" +
-                "\"$JAVA_BIN\" -jar /home/ec2-user/Manager.jar " + managerClientsN + " " + workerFilesN + " \"$INSTANCE_ID\" > /home/ec2-user/manager.log 2>&1 || { cat /home/ec2-user/manager.log > /dev/console; exit 1; }\n";
+                (debug ? "touch /home/ubuntu/manager.log\n(while true; do aws s3 cp /home/ubuntu/manager.log s3://" + aws.bucketName + "/" + AWS.S3_PREFIX + "logs/manager-$INSTANCE_ID.log --quiet; sleep 5; done) &\n" : "") +
+                "\"$JAVA_BIN\" -jar /home/ubuntu/Manager.jar " + managerClientsN + " " + workerFilesN + " \"$INSTANCE_ID\"" + (debug ? " -D" : "") + " > /home/ubuntu/manager.log 2>&1 || { cat /home/ubuntu/manager.log > /dev/console; exit 1; }\n";
         aws.createEC2(ec2Script, "manager", 1, freeSlots);
     }
 

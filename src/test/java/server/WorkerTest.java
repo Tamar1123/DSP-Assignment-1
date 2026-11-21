@@ -1,9 +1,16 @@
 package server;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import utils.*;
 
+import javax.imageio.ImageIO;
+import java.awt.Color;
+import java.awt.Font;
+import java.awt.Graphics2D;
+import java.awt.image.BufferedImage;
+import java.io.File;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -25,6 +32,35 @@ public class WorkerTest {
         String extractedText = w.identify(sampleImageUrl);
         System.out.println("Extracted text:\n" + extractedText);
         assertNotNull(extractedText);
+    }
+
+    /**
+     * Exercises the real Tess4J path without the network. Skips when the native Tesseract
+     * library/trained data is not installed on this machine; EC2 nodes install it at boot.
+     */
+    @Test
+    public void tess4jReadsAGeneratedImage() throws Exception {
+        BufferedImage img = new BufferedImage(600, 150, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = img.createGraphics();
+        g.setColor(Color.WHITE);
+        g.fillRect(0, 0, 600, 150);
+        g.setColor(Color.BLACK);
+        g.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 48));
+        g.drawString("HELLO 12345", 30, 95);
+        g.dispose();
+        File png = File.createTempFile("ocr-check-", ".png");
+        png.deleteOnExit();
+        ImageIO.write(img, "png", png);
+
+        String text;
+        try {
+            text = Worker.processOne(png.getAbsolutePath());
+        } catch (RuntimeException | LinkageError e) {
+            Assumptions.assumeTrue(false, "native Tesseract unavailable: " + e.getMessage());
+            return;
+        }
+        assertTrue(text.contains("HELLO"), "OCR text was: " + text);
+        assertTrue(text.contains("12345"), "OCR text was: " + text);
     }
 
     @Test

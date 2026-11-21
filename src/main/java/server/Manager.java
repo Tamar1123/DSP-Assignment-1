@@ -25,6 +25,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * The manager never OCRs or downloads images.
  */
 public class Manager implements Runnable {
+    /** Set by the -D argument; also on when the client debug flag is set (tests). */
+    static volatile boolean debug = false;
     private static final int RECEIVE_MAX = 10;
     private static final int RECEIVE_WAIT_SECONDS = 1;
     /** NEW_IMAGE_TASK messages are sent in batches of this size. */
@@ -35,7 +37,7 @@ public class Manager implements Runnable {
 
     private static final String WORKER_TAG = "worker";
     private static final String WORKER_JAR_KEY = AWS.S3_PREFIX + "Worker.jar";
-    private static final String WORKER_JAR_PATH = "/home/ec2-user/Worker.jar";
+    private static final String WORKER_JAR_PATH = "/home/ubuntu/Worker.jar";
 
     private final String managerID;
     private final Queue managerQueue;
@@ -56,6 +58,10 @@ public class Manager implements Runnable {
     private final IoWorker ioWorker;
 
     private volatile boolean running = true;
+    /** Set by the first TERMINATE: stop admitting, keep draining until clientTasks is empty. */
+    private final AtomicBoolean terminating = new AtomicBoolean();
+    /** The client that asked to terminate; it gets the ack even if already finished. */
+    private volatile String terminateRequester;
 
     /** Test helper: fixed manager id, and therefore fixed queue names. */
     public Manager(String managerID) {
@@ -109,13 +115,21 @@ public class Manager implements Runnable {
      * answers busy; duplicates are ignored. No S3 or EC2 call here.
      */
     public void routerTick() {
-        for (Received received : doneOcrQueue.receive(RECEIVE_MAX, 0)) {
+        List<Received> results = doneOcrQueue.receive(RECEIVE_MAX, 0);
+        if (!results.isEmpty()) {
+            logDebug("received " + results.size() + " message(s) on " + Queues.doneOcrQueueName(managerID));
+        }
+        for (Received received : results) {
             handle(received, doneOcrQueue);
         }
         if (!running) {
             return;
         }
-        for (Received received : managerQueue.receive(RECEIVE_MAX, RECEIVE_WAIT_SECONDS)) {
+        List<Received> requests = managerQueue.receive(RECEIVE_MAX, RECEIVE_WAIT_SECONDS);
+        if (!requests.isEmpty()) {
+            logDebug("received " + requests.size() + " message(s) on " + Queues.managerQueueName());
+        }
+        for (Received received : requests) {
             handle(received, managerQueue);
         }
     }
@@ -124,6 +138,7 @@ public class Manager implements Runnable {
     public void startOnce() {
         routerTick();
         runPendingIo();
+        finishTerminationIfDrained();
     }
 
     /** Test seam: runs every pending IoWorker job inline, finishes first. */
@@ -144,6 +159,11 @@ public class Manager implements Runnable {
     /** Starts the IoWorker plus the Router loop. args: manager-clients-n, worker-files-n. */
     public static void main(String[] args) {
         Queues.setDev(false);
+        for (String arg : args) {
+            if (arg.equals("-D")) {
+                debug = true;
+            }
+        }
         int managerClientsN;
         int workerFilesN;
         try {
@@ -203,6 +223,7 @@ public class Manager implements Runnable {
             while (running) {
                 try {
                     routerTick();
+                    finishTerminationIfDrained();
                 } catch (Exception e) {
                     // Keep the manager alive: one bad batch must not take the whole node down.
                     System.err.println("[MANAGER] receive loop error: " + e.getMessage());
@@ -220,6 +241,8 @@ public class Manager implements Runnable {
 
     private void handle(Received received, Queue source) {
         Message msg = received.getMessage();
+        logDebug("handling " + msg.getType() + " client=" + msg.getLocalAppID()
+                + (msg.getType() == Message.MessageType.DONE_OCR ? " url=" + msg.getImageURL() : ""));
         try {
             if (msg.getType() == null) {
                 logDebug("manager ignoring message with no type");
@@ -248,7 +271,7 @@ public class Manager implements Runnable {
                     source.delete(received);
                     break;
                 case TERMINATE:
-                    handleTerminate();
+                    handleTerminate(msg);
                     source.delete(received);
                     break;
                 default:
@@ -265,6 +288,14 @@ public class Manager implements Runnable {
     /** Admits a client and submits its fan-out to the IoWorker. No S3 or EC2 call here. */
     private void handleNewTask(Message msg) {
         String localAppID = msg.getLocalAppID();
+        if (terminating.get()) {
+            rejectedClients.incrementAndGet();
+            logDebug("terminating: rejecting client " + localAppID);
+            Message rejected = Message.createDoneTask(null, localAppID);
+            rejected.setError(true);
+            Queues.get(Queues.clientQueueName(localAppID)).send(rejected);
+            return;
+        }
         if (clientTasks.containsKey(localAppID)) {
             logDebug("ignoring duplicate new task for client " + localAppID);
             return;
@@ -297,25 +328,47 @@ public class Manager implements Runnable {
             text = "ERROR: " + text;
         }
         task.texts.putIfAbsent(msg.getImageURL(), text);
-        if (task.outstanding.decrementAndGet() <= 0) {
+        int left = task.outstanding.decrementAndGet();
+        logDebug("client " + msg.getLocalAppID() + ": " + left + " image(s) outstanding");
+        if (left <= 0) {
             ioWorker.submit(new FinishJob(task));
         }
     }
 
-    private void handleTerminate() {
-        running = false;
-        for (ClientTask task : clientTasks.values()) {
-            if (!task.done.get()) {
-                logDebug("terminating client " + task.localAppID + " with " + task.outstanding.get() + " tasks left");
-            }
-            Queues.get(Queues.clientQueueName(task.localAppID))
-                    .send(Message.createTerminate(task.localAppID));
+    /** Stops admission and records the requester; the drain and the ack happen later. */
+    private void handleTerminate(Message msg) {
+        if (!terminating.compareAndSet(false, true)) {
+            logDebug("already terminating; ignoring duplicate terminate");
+            return;
         }
+        terminateRequester = msg.getLocalAppID();
+        logDebug("terminating: draining " + clientTasks.size() + " client(s)");
+    }
+
+    /**
+     * Completes termination once every admitted client has its answer: ack the requester (even
+     * if it already finished and left clientTasks), drop the done-OCR queue, and stop the loop.
+     */
+    private void finishTerminationIfDrained() {
+        if (!running || !terminating.get() || !clientTasks.isEmpty()) {
+            return;
+        }
+        running = false;
         deleteDoneOcrQueueIfAws();
+        String requester = terminateRequester;
+        if (requester == null) {
+            return;
+        }
+        try {
+            Queues.get(Queues.clientQueueName(requester))
+                    .send(Message.createTerminate(requester));
+        } catch (Exception e) {
+            System.err.println("[MANAGER] could not ack terminate: " + e.getMessage());
+        }
     }
 
     /** Starts the workers needed for the outstanding images, capped by MAX_INSTANCES. */
-    private void ensureWorkers(int outstanding) {
+    protected void ensureWorkers(int outstanding) {
         if (Queues.isDev() || outstanding <= 0) {
             return;
         }
@@ -350,10 +403,15 @@ public class Manager implements Runnable {
     private void launchWorkers(int count) {
         AWS aws = AWS.getInstance();
         String script = "#!/bin/bash\n"
+                + "export DEBIAN_FRONTEND=noninteractive\n"
+                + "apt-get update -y >/dev/console 2>&1\n"
+                + "apt-get install -y --no-install-recommends openjdk-17-jre-headless tesseract-ocr tesseract-ocr-eng awscli >/dev/console 2>&1\n"
+                + "export TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata\n"
                 + "aws s3 cp s3://" + aws.bucketName + "/" + WORKER_JAR_KEY + " " + WORKER_JAR_PATH + "\n"
-                + "JAVA_BIN=$(ls /usr/lib/jvm/*1.8*/bin/java 2>/dev/null | head -n 1)\n"
-                + "[ -z \"$JAVA_BIN\" ] && JAVA_BIN=$(command -v java)\n"
-                + "\"$JAVA_BIN\" -jar " + WORKER_JAR_PATH + " > /home/ec2-user/worker.log 2>&1 || { cat /home/ec2-user/worker.log > /dev/console; exit 1; }\n";
+                + "JAVA_BIN=$(command -v java)\n"
+                + (debug ? "touch /home/ubuntu/worker.log\n(while true; do aws s3 cp /home/ubuntu/worker.log s3://"
+                + aws.bucketName + "/" + AWS.S3_PREFIX + "logs/worker-$(hostname).log --quiet; sleep 5; done) &\n" : "")
+                + "\"$JAVA_BIN\" -jar " + WORKER_JAR_PATH + " > /home/ubuntu/worker.log 2>&1 || { cat /home/ubuntu/worker.log > /dev/console; exit 1; }\n";
         aws.createEC2(script, WORKER_TAG, count);
     }
 
@@ -475,7 +533,7 @@ public class Manager implements Runnable {
     }
 
     private void logDebug(String message) {
-        if (client.App.debug) {
+        if (debug || client.App.debug) {
             System.out.println("[DEBUG] " + message);
         }
     }
@@ -499,12 +557,14 @@ public class Manager implements Runnable {
                 for (String url : urls) {
                     batch.add(Message.createNewImageTask(url, task.localAppID, managerID));
                     if (batch.size() == FAN_OUT_BATCH) {
+                        logDebug("sending " + batch.size() + " NEW_IMAGE_TASK to " + Queues.workerQueueName());
                         workerQueue.sendAll(batch);
                         batch = new ArrayList<Message>(FAN_OUT_BATCH);
                         runPendingFinishes();
                     }
                 }
                 if (!batch.isEmpty()) {
+                    logDebug("sending " + batch.size() + " NEW_IMAGE_TASK to " + Queues.workerQueueName());
                     workerQueue.sendAll(batch);
                 }
                 logDebug("admitted client " + task.localAppID + " with " + urls.size() + " images");
@@ -537,6 +597,8 @@ public class Manager implements Runnable {
                     : AWS.S3_PREFIX + "summaries/" + task.localAppID + ".txt";
             try {
                 writeSummary(task, summaryLocation);
+                logDebug("summary written at " + summaryLocation + "; sending DONE_TASK to "
+                        + Queues.clientQueueName(task.localAppID));
                 Queues.get(Queues.clientQueueName(task.localAppID))
                         .send(Message.createDoneTask(summaryLocation, task.localAppID));
                 servedClients.incrementAndGet();
