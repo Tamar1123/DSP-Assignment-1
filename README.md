@@ -43,14 +43,14 @@ The system decouples client submission, task orchestration, and OCR execution ac
 
 ## AMI & Environment Setup
 
-- **AMI ID**: `ami-00b13f11600160c10` — Ubuntu 22.04 LTS, `us-east-1` (configured in
-  `src/main/java/utils/AWS.java`).
-- **Native OCR Stack**: the manager and worker user-data scripts run
-  `apt-get update` and install `openjdk-17-jre-headless`, `tesseract-ocr`,
-  `tesseract-ocr-eng` and `awscli` before starting the jars. The code is Java 8 source and runs
-  on the Java 17 runtime. This is why the first ~2–3 minutes of a run are boot time.
-- **No custom AMI is required.** Any account-visible Ubuntu 22.04 image launches the same way;
-  update `AWS.ami` if the pinned one is retired.
+- **AMI ID**: `ami-0046c29ee3573ac7f` — the team's custom OCR image, `us-east-1` (configured
+  in `src/main/java/utils/AWS.java`).
+- **Native OCR Stack**: the image is an Amazon Linux AMI (`2018.03`) pre-provisioned with
+  `libwebp`, Leptonica, Tesseract and `eng.traineddata`, plus Java 8 and the AWS CLI. The
+  user-data scripts download the jars to `/home/ec2-user/` and run them without installing
+  anything.
+- **Availability**: the AMI must be shared with the account or copied into it; if it is not
+  visible, EC2 reports `Not authorized for images` and no nodes start.
 - **Local build tools**: JDK 17 and Apache Maven (`mvn`).
 
 ## Prerequisites & Configuration
@@ -58,7 +58,7 @@ The system decouples client submission, task orchestration, and OCR execution ac
 1. **AWS Credentials**: Configure valid AWS credentials (`~/.aws/credentials` or environment variables) with permissions for **EC2**, **S3**, and **SQS** in `us-east-1` (such as AWS Learner Lab session credentials).
 2. **SSH Key Pair**: Ensure your EC2 key pair (e.g., `~/.ssh/vockey.pem`) is available if connecting to EC2 instances for inspection or debugging.
 3. **AMI Verification**: Confirm `public static String ami` in `src/main/java/utils/AWS.java`
-   points at an Ubuntu 22.04 image available in your account/region.
+   points at the team OCR AMI and that it is available in your account/region.
 
 ## Build & Run Tests
 
@@ -100,7 +100,8 @@ java -jar target/App.jar <inputFileName> <outputFileName> \
   `s3://<bucket>/assignment1/logs/`.
 
 **Measured run:** `manager-clients-n=1`, `worker-files-n=100`, 3 sample URLs (1 manager + 1
-worker on Ubuntu 22.04) took about **3 min 50 s** from `NEW_TASK` to `DONE_TASK`, dominated by
-package installation at boot. One URL OCRed successfully; two sample URLs were dead (404 / DNS)
-and correctly rendered as error lines. `scripts/lab-run.sh` runs this small case end to end and
+worker) took about **3 min 50 s** from `NEW_TASK` to `DONE_TASK` on the Ubuntu boot-install
+path. The pinned team AMI already contains the OCR stack, so boot should be faster; re-measure
+before submitting. One URL OCRed successfully; two sample URLs were dead (404 / DNS) and
+correctly rendered as error lines. `scripts/lab-run.sh` runs this small case end to end and
 cleans up the instances, queues and S3 objects afterwards.

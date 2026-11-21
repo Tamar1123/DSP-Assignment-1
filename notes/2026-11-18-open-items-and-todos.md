@@ -19,10 +19,12 @@ Rendered: `notes/2026-11-18-open-items-and-todos.html`
   with `manager-clients-n=1`, `worker-files-n=100` and 3 URLs produced one real OCR line and
   two error lines for the dead sample URLs, then sent `TERMINATE` and received the ack.
   Client start to `DONE_TASK` was ~3 min 50 s, most of it package installation at boot.
-- The AMI committed in `cfc08e3` (`ami-0046c29ee3573ac7f`) **does not exist in the current
-  Learner Lab account** ("Not authorized for images"). The code now pins Ubuntu 22.04 LTS
-  `ami-00b13f11600160c10` (us-east-1), and both node scripts install
-  `openjdk-17-jre-headless tesseract-ocr tesseract-ocr-eng awscli` in user-data before starting.
+- The code pins the team AMI `ami-0046c29ee3573ac7f` (Amazon Linux, preinstalled Tesseract
+  stack, Java 8, AWS CLI). It is **not currently visible in this Learner Lab account**
+  ("Not authorized for images"), so a run here cannot start nodes until it is shared or copied.
+  The successful run above used a temporary Ubuntu 22.04 image with boot-time `apt` installs;
+  that fallback is no longer in the code. Re-share the team AMI (or re-add the fallback) before
+  the next lab run.
 - Everything the earlier audit listed as fixed stayed fixed: argument passing, the capacity-aware
   manager, the S3 summary upload/download, HTML generation, worker bootstrap, the SQS visibility
   timeout, the SDK 2.57.0 BOM, the `Router`/`IoWorker` split, and the `TERMINATE` ack for a
@@ -87,9 +89,9 @@ Rendered: `notes/2026-11-18-open-items-and-todos.html`
   and have `App.run` surface it, or (b) teach `await` to treat an error `DONE_TASK` as terminal
   while waiting for `TERMINATE`. Under the single-terminate assumption this is the
   duplicate/at-least-once path, not a second client.
-- **Boot cost is now the dominant latency.** Each node runs `apt-get update` plus four package
-  installs, ~2–3 minutes per run. Bake those packages into a custom AMI (update `AWS.ami` and
-  the README) if the measured time matters for grading.
+- **The team AMI is the fast path; keep a fallback.** With the AMI visible there is no boot
+  install. If it is missing, the earlier Ubuntu fallback (`apt-get install` in user-data) added
+  ~2–3 minutes per run; re-introduce it only as a documented workaround.
 - **Local OCR needs native Tesseract.** `WorkerTest.tess4jReadsAGeneratedImage` skips when
   `libtesseract` is absent. Install `tesseract-ocr` + `tesseract-ocr-eng` (or set
   `LD_LIBRARY_PATH`/`TESSDATA_PREFIX` to an extracted copy) to make it run locally.

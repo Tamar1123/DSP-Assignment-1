@@ -37,7 +37,7 @@ public class Manager implements Runnable {
 
     private static final String WORKER_TAG = "worker";
     private static final String WORKER_JAR_KEY = AWS.S3_PREFIX + "Worker.jar";
-    private static final String WORKER_JAR_PATH = "/home/ubuntu/Worker.jar";
+    private static final String WORKER_JAR_PATH = "/home/ec2-user/Worker.jar";
 
     private final String managerID;
     private final Queue managerQueue;
@@ -403,15 +403,12 @@ public class Manager implements Runnable {
     private void launchWorkers(int count) {
         AWS aws = AWS.getInstance();
         String script = "#!/bin/bash\n"
-                + "export DEBIAN_FRONTEND=noninteractive\n"
-                + "apt-get update -y >/dev/console 2>&1\n"
-                + "apt-get install -y --no-install-recommends openjdk-17-jre-headless tesseract-ocr tesseract-ocr-eng awscli >/dev/console 2>&1\n"
-                + "export TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata\n"
                 + "aws s3 cp s3://" + aws.bucketName + "/" + WORKER_JAR_KEY + " " + WORKER_JAR_PATH + "\n"
-                + "JAVA_BIN=$(command -v java)\n"
-                + (debug ? "touch /home/ubuntu/worker.log\n(while true; do aws s3 cp /home/ubuntu/worker.log s3://"
+                + "JAVA_BIN=$(ls /usr/lib/jvm/*1.8*/bin/java 2>/dev/null | head -n 1)\n"
+                + "[ -z \"$JAVA_BIN\" ] && JAVA_BIN=$(command -v java)\n"
+                + (debug ? "touch /home/ec2-user/worker.log\n(while true; do aws s3 cp /home/ec2-user/worker.log s3://"
                 + aws.bucketName + "/" + AWS.S3_PREFIX + "logs/worker-$(hostname).log --quiet; sleep 5; done) &\n" : "")
-                + "\"$JAVA_BIN\" -jar " + WORKER_JAR_PATH + " > /home/ubuntu/worker.log 2>&1 || { cat /home/ubuntu/worker.log > /dev/console; exit 1; }\n";
+                + "\"$JAVA_BIN\" -jar " + WORKER_JAR_PATH + " > /home/ec2-user/worker.log 2>&1 || { cat /home/ec2-user/worker.log > /dev/console; exit 1; }\n";
         aws.createEC2(script, WORKER_TAG, count);
     }
 

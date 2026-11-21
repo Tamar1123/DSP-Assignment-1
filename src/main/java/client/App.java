@@ -232,21 +232,16 @@ public class App {
         uploadJarToS3(s3, aws.bucketName, MANAGER_JAR_LOCAL_PATH, MANAGER_JAR_S3_KEY);
         uploadJarToS3(s3, aws.bucketName, WORKER_JAR_LOCAL_PATH, WORKER_JAR_S3_KEY);
 
-        String bootstrap =
-                "export DEBIAN_FRONTEND=noninteractive\n" +
-                "apt-get update -y >/dev/console 2>&1\n" +
-                "apt-get install -y --no-install-recommends openjdk-17-jre-headless tesseract-ocr tesseract-ocr-eng awscli >/dev/console 2>&1\n" +
-                "export TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata\n";
         String ec2Script = "#!/bin/bash\n" +
-                bootstrap +
                 "TOKEN=$(curl -X PUT \"http://169.254.169.254/latest/api/token\" -H \"X-aws-ec2-metadata-token-ttl-seconds: 21600\" -s)\n" +
                 "INSTANCE_ID=$(curl -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/instance-id -s)\n" +
-                "aws s3 cp s3://" + aws.bucketName + "/" + MANAGER_JAR_S3_KEY + " /home/ubuntu/Manager.jar\n" +
-                "JAVA_BIN=$(command -v java)\n" +
+                "aws s3 cp s3://" + aws.bucketName + "/" + MANAGER_JAR_S3_KEY + " /home/ec2-user/Manager.jar\n" +
+                "JAVA_BIN=$(ls /usr/lib/jvm/*1.8*/bin/java 2>/dev/null | head -n 1)\n" +
+                "[ -z \"$JAVA_BIN\" ] && JAVA_BIN=$(command -v java)\n" +
                 "echo \"[BOOTSTRAP] Using JAVA_BIN=$JAVA_BIN\" > /dev/console\n" +
                 "\"$JAVA_BIN\" -version > /dev/console 2>&1\n" +
-                (debug ? "touch /home/ubuntu/manager.log\n(while true; do aws s3 cp /home/ubuntu/manager.log s3://" + aws.bucketName + "/" + AWS.S3_PREFIX + "logs/manager-$INSTANCE_ID.log --quiet; sleep 5; done) &\n" : "") +
-                "\"$JAVA_BIN\" -jar /home/ubuntu/Manager.jar " + managerClientsN + " " + workerFilesN + " \"$INSTANCE_ID\"" + (debug ? " -D" : "") + " > /home/ubuntu/manager.log 2>&1 || { cat /home/ubuntu/manager.log > /dev/console; exit 1; }\n";
+                (debug ? "touch /home/ec2-user/manager.log\n(while true; do aws s3 cp /home/ec2-user/manager.log s3://" + aws.bucketName + "/" + AWS.S3_PREFIX + "logs/manager-$INSTANCE_ID.log --quiet; sleep 5; done) &\n" : "") +
+                "\"$JAVA_BIN\" -jar /home/ec2-user/Manager.jar " + managerClientsN + " " + workerFilesN + " \"$INSTANCE_ID\"" + (debug ? " -D" : "") + " > /home/ec2-user/manager.log 2>&1 || { cat /home/ec2-user/manager.log > /dev/console; exit 1; }\n";
         aws.createEC2(ec2Script, "manager", 1, freeSlots);
     }
 
