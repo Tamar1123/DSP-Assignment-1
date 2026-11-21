@@ -171,6 +171,25 @@ public class ManagerTest {
     }
 
     @Test
+    public void workerLaunchScriptTerminatesItsOwnInstanceOnExit() {
+        Manager m = new Manager("mgr-script");
+
+        String script = m.workerLaunchScript("test-bucket");
+
+        assertTrue(script.contains("aws s3 cp s3://test-bucket/" + AWS.S3_PREFIX + "Worker.jar /home/ec2-user/Worker.jar"),
+                "the worker must still download its jar");
+        assertTrue(script.contains("set +e\n"), "the exit block must not abort before self-termination");
+        assertTrue(script.contains("STATUS=$?"), "the worker exit status must be captured");
+        assertTrue(script.contains("cat /home/ec2-user/worker.log > /dev/console"),
+                "the worker log must be printed before termination");
+        assertTrue(script.contains("latest/meta-data/instance-id"),
+                "the script must look up its own instance id");
+        assertTrue(script.contains("aws ec2 terminate-instances --region us-east-1 --instance-ids \"$INSTANCE_ID\" || true"),
+                "a worker exit must terminate its own instance");
+        assertTrue(script.contains("exit $STATUS"), "the worker exit status must be returned");
+    }
+
+    @Test
     public void ensureWorkersCountsOnlyThisManagersWorkers() {
         final List<Integer> launchCounts = new ArrayList<Integer>();
         Manager m = new Manager("mgr-ensure", 10, 3) {

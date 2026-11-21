@@ -420,7 +420,12 @@ public class Manager implements Runnable {
     /** Launches worker instances; protected so tests can supply IDs without reaching AWS. */
     protected List<String> launchWorkerInstances(int count) {
         AWS aws = AWS.getInstance();
-        String script = "#!/bin/bash\n"
+        return aws.createEC2Instances(workerLaunchScript(aws.bucketName), WORKER_TAG, count);
+    }
+
+    /** User-data script for one worker; package-private so tests can check it without AWS. */
+    String workerLaunchScript(String bucketName) {
+        return "#!/bin/bash\n"
                 + "set -e\n"
                 + "exec > >(tee -a /var/log/dsp-bootstrap.log) 2>&1\n"
                 + "mkdir -p /home/ec2-user\n"
@@ -429,12 +434,22 @@ public class Manager implements Runnable {
                 + "if ! command -v aws >/dev/null 2>&1 || ! command -v java >/dev/null 2>&1; then\n"
                 + "  apt-get update -y && apt-get install -y awscli openjdk-11-jre-headless\n"
                 + "fi\n"
-                + "aws s3 cp s3://" + aws.bucketName + "/" + WORKER_JAR_KEY + " " + WORKER_JAR_PATH + "\n"
+                + "aws s3 cp s3://" + bucketName + "/" + WORKER_JAR_KEY + " " + WORKER_JAR_PATH + "\n"
                 + "JAVA_BIN=$(command -v java)\n"
                 + (debug ? "touch /home/ec2-user/worker.log\n(while true; do aws s3 cp /home/ec2-user/worker.log s3://"
-                + aws.bucketName + "/" + AWS.S3_PREFIX + "logs/worker-$(hostname).log --quiet; sleep 5; done) &\n" : "")
-                + "\"$JAVA_BIN\" -jar " + WORKER_JAR_PATH + " > /home/ec2-user/worker.log 2>&1 || { cat /home/ec2-user/worker.log > /dev/console; exit 1; }\n";
-        return aws.createEC2Instances(script, WORKER_TAG, count);
+                + bucketName + "/" + AWS.S3_PREFIX + "logs/worker-$(hostname).log --quiet; sleep 5; done) &\n" : "")
+                // A worker exit (normal or crash) terminates its own instance so the manager sees it die.
+                + "set +e\n"
+                + "\"$JAVA_BIN\" -jar " + WORKER_JAR_PATH + " > /home/ec2-user/worker.log 2>&1\n"
+                + "STATUS=$?\n"
+                + "cat /home/ec2-user/worker.log > /dev/console || true\n"
+                + "TOKEN=$(curl -s -X PUT \"http://169.254.169.254/latest/api/token\" "
+                + "-H \"X-aws-ec2-metadata-token-ttl-seconds: 21600\")\n"
+                + "INSTANCE_ID=$(curl -s -H \"X-aws-ec2-metadata-token: $TOKEN\" "
+                + "http://169.254.169.254/latest/meta-data/instance-id)\n"
+                + "aws ec2 terminate-instances --region " + AWS.region2.id()
+                + " --instance-ids \"$INSTANCE_ID\" || true\n"
+                + "exit $STATUS\n";
     }
 
     private int totalOutstanding() {
