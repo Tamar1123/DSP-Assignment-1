@@ -146,10 +146,10 @@ public class ManagerTest {
         Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-13b"));
         m.startOnce();
 
-        List<Received> busy = Queues.get(Queues.clientQueueName("app-13b")).receive(1, 1);
-        assertEquals(1, busy.size());
-        assertEquals(Message.MessageType.DONE_TASK, busy.get(0).getMessage().getType());
-        assertTrue(busy.get(0).getMessage().isError());
+        List<Received> rejected = Queues.get(Queues.clientQueueName("app-13b")).receive(1, 1);
+        assertEquals(1, rejected.size());
+        assertEquals(Message.MessageType.DONE_TASK, rejected.get(0).getMessage().getType());
+        assertTrue(rejected.get(0).getMessage().isError());
         assertEquals(1, m.getActiveClients(), "the draining client is untouched");
         assertTrue(m.isRunning());
     }
@@ -361,7 +361,7 @@ public class ManagerTest {
     }
 
     @Test
-    public void admitsUpToMaxClientsAndAnswersTheNextBusy() throws Exception {
+    public void admitsUpToMaxClientsAndRequeuesTheNextOne() throws Exception {
         String in = inputFile("http://a");
         Manager m = new Manager("mgr-7", 2, 5);
         for (String app : new String[] {"app-7a", "app-7b", "app-7c"}) {
@@ -373,35 +373,37 @@ public class ManagerTest {
         assertFalse(m.hasCapacity());
         assertEquals(2, Queues.get(Queues.workerQueueName()).receive(10, 1).size());
 
-        List<Received> busy = Queues.get(Queues.clientQueueName("app-7c")).receive(1, 1);
-        assertEquals(1, busy.size());
-        assertEquals(Message.MessageType.DONE_TASK, busy.get(0).getMessage().getType());
-        assertTrue(busy.get(0).getMessage().isError());
-        assertNull(busy.get(0).getMessage().getOutputFileLocation());
+        // The full manager gives the request back to the shared queue: no client reply.
+        assertTrue(Queues.get(Queues.clientQueueName("app-7c")).receive(1, 1).isEmpty(),
+                "a full manager must not answer the client");
+        List<Received> requeued = Queues.get(Queues.managerQueueName()).receive(10, 1);
+        assertEquals(1, requeued.size());
+        assertEquals(Message.MessageType.NEW_TASK, requeued.get(0).getMessage().getType());
+        assertEquals("app-7c", requeued.get(0).getMessage().getLocalAppID());
         assertEquals(1, m.getRejectedClients());
         assertEquals(0, m.getServedClients());
     }
 
     @Test
-    public void fullManagerStillPollsAndAnswersBusy() throws Exception {
+    public void fullManagerRequeuesNewTaskAndSendsNoClientReply() throws Exception {
         String in = inputFile("http://a");
         Manager m = new Manager("mgr-8", 1, 5);
         Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-8a"));
         m.startOnce();
         assertFalse(m.hasCapacity());
 
-        // Admission always polls: a request without a free slot is answered busy and deleted,
-        // not left on the queue for another manager.
+        // A request without a free slot is released back to manager_queue (for any manager to
+        // admit later), not deleted and not answered with an error.
         Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-8b"));
         m.startOnce();
-        List<Received> busy = Queues.get(Queues.clientQueueName("app-8b")).receive(1, 1);
-        assertEquals(1, busy.size());
-        assertEquals(Message.MessageType.DONE_TASK, busy.get(0).getMessage().getType());
-        assertTrue(busy.get(0).getMessage().isError());
-        assertNull(busy.get(0).getMessage().getOutputFileLocation());
+        assertTrue(Queues.get(Queues.clientQueueName("app-8b")).receive(1, 1).isEmpty(),
+                "a full manager must not answer the client");
+        List<Received> requeued = Queues.get(Queues.managerQueueName()).receive(10, 1);
+        assertEquals(1, requeued.size());
+        assertEquals("app-8b", requeued.get(0).getMessage().getLocalAppID());
+        assertEquals(Message.MessageType.NEW_TASK, requeued.get(0).getMessage().getType());
         assertEquals(1, m.getRejectedClients());
-        assertEquals(1, m.getActiveClients(), "the busy reply must not disturb the admitted client");
-        assertTrue(Queues.get(Queues.managerQueueName()).receive(10, 1).isEmpty(), "the request was deleted");
+        assertEquals(1, m.getActiveClients(), "the requeue must not disturb the admitted client");
     }
 
     @Test
@@ -452,7 +454,7 @@ public class ManagerTest {
     }
 
     @Test
-    public void duplicateNewTaskIsOneEntryAndNotBusy() throws Exception {
+    public void duplicateNewTaskIsOneEntryAndNotRequeued() throws Exception {
         String in = inputFile("http://a", "http://b");
         Manager m = new Manager("mgr-11", 1, 5);
         Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-11"));
@@ -462,6 +464,8 @@ public class ManagerTest {
         assertEquals(0, m.getRejectedClients());
         assertEquals(2, Queues.get(Queues.workerQueueName()).receive(10, 1).size());
         assertTrue(Queues.get(Queues.clientQueueName("app-11")).receive(1, 1).isEmpty());
+        assertTrue(Queues.get(Queues.managerQueueName()).receive(10, 0).isEmpty(),
+                "the duplicate is deleted, not requeued");
     }
 
     @Test

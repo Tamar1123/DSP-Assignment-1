@@ -131,26 +131,34 @@ public class EndToEndTest {
             assertNotEquals(firstClientID, secondClientID);
 
             // Make both requests available in the same receive batch. The first takes the only
-            // slot; the second receives the manager's busy reply and must retry as the same client.
+            // slot; the full manager requeues the second on manager_queue instead of answering
+            // busy, so the second client keeps waiting on its inbox.
             Queue managerQueue = Queues.get(Queues.managerQueueName());
             managerQueue.release(firstTask);
             managerQueue.release(secondTask);
             manager.startOnce();
             assertEquals(1, manager.getActiveClients());
-            assertEquals(1, manager.getRejectedClients(), "second client was not told the manager was busy");
+            assertEquals(1, manager.getRejectedClients(), "second client was not requeued");
 
-            Received retry = managerQueue.receive(1, 5).get(0);
-            assertEquals(secondClientID, retry.getMessage().getLocalAppID());
-            assertEquals(secondInput.getAbsolutePath(), retry.getMessage().getInputFileLocation());
-            assertEquals(3, directoryLookups.size(), "retry must re-check the manager directory");
-            managerQueue.release(retry);
+            // The requeue is the manager's doing: the request is back on manager_queue while the
+            // second client's inbox is still empty — no busy DONE_TASK was sent.
+            Received requeued = managerQueue.receive(1, 5).get(0);
+            assertEquals(secondClientID, requeued.getMessage().getLocalAppID());
+            assertEquals(secondInput.getAbsolutePath(), requeued.getMessage().getInputFileLocation());
+            assertTrue(Queues.get(Queues.clientQueueName(secondClientID)).receive(1, 0).isEmpty(),
+                    "a full manager must requeue, not answer busy");
+            assertEquals(2, directoryLookups.size(),
+                    "one lookup per send: the requeue is manager-side, the client does not resend");
 
             worker.startOnce();
             manager.startOnce(); // done-OCR is processed although the request queue is gated
             assertEquals(0, manager.getActiveClients(), "first completion did not free the slot");
             assertNotNull(firstSummary.get(5, TimeUnit.SECONDS));
 
-            manager.startOnce(); // now the retry is admitted into the freed slot
+            // Hold the requeue until the slot is free, so it is admitted exactly once and the
+            // rejection count stays at the single requeue.
+            managerQueue.release(requeued);
+            manager.startOnce(); // now the requeued request is admitted into the freed slot
             assertEquals(1, manager.getActiveClients());
             worker.startOnce();
             manager.startOnce();

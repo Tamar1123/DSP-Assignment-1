@@ -31,6 +31,8 @@ public class Manager implements Runnable {
     static volatile boolean debug = false;
     private static final int RECEIVE_MAX = 10;
     private static final int RECEIVE_WAIT_SECONDS = 1;
+    /** Visibility delay for a NEW_TASK the full manager gives back, so it is not busy-looped. */
+    private static final int REQUEUE_DELAY_SECONDS = 5;
     /** NEW_IMAGE_TASK messages are sent in batches of this size. */
     private static final int FAN_OUT_BATCH = 10;
     /** How often run() reconciles the worker set and launches crash replacements. */
@@ -59,7 +61,7 @@ public class Manager implements Runnable {
     /** Admitted clients keyed by localAppID; its size is the load. */
     private final Map<String, ClientTask> clientTasks = new ConcurrentHashMap<String, ClientTask>();
     private final AtomicInteger servedClients = new AtomicInteger(); // finished clients
-    private final AtomicInteger rejectedClients = new AtomicInteger(); // busy replies
+    private final AtomicInteger rejectedClients = new AtomicInteger(); // full-manager requeues
 
     /** Runs every blocking job, finishes before fan-outs, on one thread. */
     private final IoWorker ioWorker;
@@ -121,7 +123,7 @@ public class Manager implements Runnable {
 
     /**
      * One router tick. Drains done-OCR without waiting, then polls requests. A full manager
-     * answers busy; duplicates are ignored. No S3 or EC2 call here.
+     * requeues the request on manager_queue; duplicates are ignored. No S3 or EC2 call here.
      */
     public void routerTick() {
         List<Received> results = doneOcrQueue.receive(RECEIVE_MAX, 0);
@@ -262,8 +264,9 @@ public class Manager implements Runnable {
             }
             switch (msg.getType()) {
                 case NEW_TASK:
+                    boolean requeue = false;
                     try {
-                        handleNewTask(msg);
+                        requeue = handleNewTask(msg);
                     } catch (Exception e) {
                         System.err.println("[MANAGER] failed to handle NEW_TASK: " + e.getMessage());
                         Message error = Message.createDoneTask(
@@ -275,7 +278,11 @@ public class Manager implements Runnable {
                             System.err.println("[MANAGER] could not send error reply: " + sendEx.getMessage());
                         }
                     }
-                    source.delete(received);
+                    if (requeue) {
+                        source.release(received, REQUEUE_DELAY_SECONDS);
+                    } else {
+                        source.delete(received);
+                    }
                     break;
                 case DONE_OCR:
                     handleDoneOcr(msg);
@@ -296,8 +303,13 @@ public class Manager implements Runnable {
         }
     }
 
-    /** Admits a client and submits its fan-out to the IoWorker. No S3 or EC2 call here. */
-    private void handleNewTask(Message msg) {
+    /**
+     * Admits a client and submits its fan-out to the IoWorker. No S3 or EC2 call here.
+     * Returns true when the request must go back on manager_queue (no free slot): the caller
+     * releases it with a delay instead of deleting it. Terminating and duplicate requests are
+     * handled here and return false.
+     */
+    private boolean handleNewTask(Message msg) {
         String localAppID = msg.getLocalAppID();
         if (terminating.get()) {
             rejectedClients.incrementAndGet();
@@ -305,24 +317,22 @@ public class Manager implements Runnable {
             Message rejected = Message.createDoneTask(null, localAppID);
             rejected.setError(true);
             Queues.get(Queues.clientQueueName(localAppID)).send(rejected);
-            return;
+            return false;
         }
         if (clientTasks.containsKey(localAppID)) {
             logDebug("ignoring duplicate new task for client " + localAppID);
-            return;
+            return false;
         }
         if (!hasCapacity()) {
             rejectedClients.incrementAndGet();
-            logDebug("busy: rejecting client " + localAppID + " (" + clientTasks.size() + "/" + maxClients + ")");
-            Message busy = Message.createDoneTask(null, localAppID);
-            busy.setError(true);
-            Queues.get(Queues.clientQueueName(localAppID)).send(busy);
-            return;
+            logDebug("full: requeueing client " + localAppID + " (" + clientTasks.size() + "/" + maxClients + ")");
+            return true;
         }
         ClientTask task = new ClientTask(localAppID, msg.getInputFileLocation());
         clientTasks.put(localAppID, task);
         ioWorker.submit(new FanOutJob(task));
         logDebug("admitted client " + localAppID);
+        return false;
     }
 
     /** Records a result and queues finish when the last one arrives. */

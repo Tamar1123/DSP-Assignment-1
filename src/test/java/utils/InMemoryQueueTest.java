@@ -99,6 +99,18 @@ public class InMemoryQueueTest {
     }
 
     @Test
+    public void releaseWithDelayPutsTheMessageBackAtOnce() {
+        // The dev queue ignores the delay: the message is visible again immediately.
+        Queue q = new InMemoryQueue();
+        q.send(Message.createNewTask("in.txt", "app-d"));
+        Received r = q.receive(1, 0).get(0);
+        q.release(r, 5);
+        List<Received> again = q.receive(1, 0);
+        assertEquals(1, again.size());
+        assertEquals("in.txt", again.get(0).getMessage().getInputFileLocation());
+    }
+
+    @Test
     public void receiveReturnsAtMostMax() {
         Queue q = new InMemoryQueue();
         q.send(Message.createNewTask("a", "app-1"));

@@ -115,6 +115,15 @@ public class SqsQueue implements Queue {
                 .build());
     }
 
+    @Override
+    public void release(Received received, int delaySeconds) {
+        sqs().changeMessageVisibility(ChangeMessageVisibilityRequest.builder()
+                .queueUrl(url())
+                .receiptHandle(received.getReceiptHandle())
+                .visibilityTimeout(delaySeconds)
+                .build());
+    }
+
     private SqsClient sqs() {
         return AWS.getInstance().getSqs();
     }

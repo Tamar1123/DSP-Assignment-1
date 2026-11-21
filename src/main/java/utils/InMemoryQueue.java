@@ -67,4 +67,10 @@ public class InMemoryQueue implements Queue {
             throw new RuntimeException("Interrupted while releasing to in-memory queue", e);
         }
     }
+
+    @Override
+    public void release(Received received, int delaySeconds) {
+        // Dev has no visibility clock: the delay is ignored and the message is back at once.
+        release(received);
+    }
 }

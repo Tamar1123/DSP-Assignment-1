@@ -27,4 +27,14 @@ public interface Queue {
     void delete(Received received);
 
     void release(Received received);
+
+    /**
+     * Makes the message visible again after {@code delaySeconds}, so a consumer that cannot
+     * take it now (for example, a full manager) does not get it back immediately. The default
+     * ignores the delay and delegates to {@link #release(Received)}; transports that support a
+     * visibility delay override this.
+     */
+    default void release(Received received, int delaySeconds) {
+        release(received);
+    }
 }
