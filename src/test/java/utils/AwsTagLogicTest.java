@@ -70,25 +70,15 @@ public class AwsTagLogicTest {
     }
 
     @Test
-    public void managerTagIsAddedOnlyWhenManagerIDIsProvided() {
-        // New overload's tag set: Name + managerID (free sentinel drops the free tag).
-        Map<String, String> withManager = tagMap(AWS.buildInstanceTags("worker", AWS.UNKNOWN_FREE, "mgr-1"));
-        assertEquals("worker", withManager.get("Name"));
-        assertEquals("mgr-1", withManager.get(AWS.MANAGER_TAG));
-        assertFalse(withManager.containsKey(AWS.FREE_TAG));
+    public void instanceTagsCarryNameAndOnlyAUsableFreeHint() {
+        // The unknown sentinel drops the free tag; a real count adds it.
+        Map<String, String> worker = tagMap(AWS.buildInstanceTags("worker", AWS.UNKNOWN_FREE));
+        assertEquals("worker", worker.get("Name"));
+        assertFalse(worker.containsKey(AWS.FREE_TAG));
 
-        // Existing overloads keep today's behavior: no managerID tag.
-        Map<String, String> withoutManager = tagMap(AWS.buildInstanceTags("worker", AWS.UNKNOWN_FREE, null));
-        assertEquals("worker", withoutManager.get("Name"));
-        assertFalse(withoutManager.containsKey(AWS.MANAGER_TAG));
-
-        Map<String, String> emptyManager = tagMap(AWS.buildInstanceTags("worker", AWS.UNKNOWN_FREE, ""));
-        assertFalse(emptyManager.containsKey(AWS.MANAGER_TAG));
-
-        // managerID tag composes with the existing free-slot tag.
-        Map<String, String> both = tagMap(AWS.buildInstanceTags("manager", 3, "mgr-2"));
-        assertEquals("3", both.get(AWS.FREE_TAG));
-        assertEquals("mgr-2", both.get(AWS.MANAGER_TAG));
+        Map<String, String> manager = tagMap(AWS.buildInstanceTags("manager", 3));
+        assertEquals("manager", manager.get("Name"));
+        assertEquals("3", manager.get(AWS.FREE_TAG));
     }
 
     private static Map<String, String> tagMap(List<software.amazon.awssdk.services.ec2.model.Tag> tags) {

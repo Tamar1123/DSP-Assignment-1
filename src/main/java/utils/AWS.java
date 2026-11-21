@@ -147,15 +147,15 @@ public String bucketName;
      * launched instance ID. A count below one launches nothing.
      */
     public List<String> createEC2Instances(String script, String tagName, int numberOfInstances) {
-        return createEC2Instances(script, tagName, numberOfInstances, UNKNOWN_FREE, null);
+        return createEC2Instances(script, tagName, numberOfInstances, UNKNOWN_FREE);
     }
 
     private List<String> createEC2Instances(String script, String tagName, int numberOfInstances,
-                                            int freeSlots, String managerID) {
+                                            int freeSlots) {
         if (numberOfInstances < 1) {
             return Collections.emptyList();
         }
-        List<Tag> tags = buildInstanceTags(tagName, freeSlots, managerID);
+        List<Tag> tags = buildInstanceTags(tagName, freeSlots);
         RunInstancesRequest runRequest = RunInstancesRequest.builder()
                 .instanceType(InstanceType.M4_LARGE)
                 .imageId(ami)
@@ -192,16 +192,7 @@ public String bucketName;
      * passes {@code manager-clients-n} so the very first describe call already sees it.
      */
     public String createEC2(String script, String tagName, int numberOfInstances, int freeSlots) {
-        return firstInstanceId(createEC2Instances(script, tagName, numberOfInstances, freeSlots, null));
-    }
-
-    /**
-     * As {@link #createEC2(String, String, int, int)}, plus a {@link #MANAGER_TAG} tag
-     * when {@code managerID} is non-null and non-empty, so a terminating manager can
-     * later find and stop the workers it launched.
-     */
-    public String createEC2(String script, String tagName, int numberOfInstances, int freeSlots, String managerID) {
-        return firstInstanceId(createEC2Instances(script, tagName, numberOfInstances, freeSlots, managerID));
+        return firstInstanceId(createEC2Instances(script, tagName, numberOfInstances, freeSlots));
     }
 
     private static String firstInstanceId(List<String> instanceIds) {
@@ -211,24 +202,15 @@ public String bucketName;
     // ---- instance tag building --------------------------------------------------
 
     /**
-     * EC2 tag key carrying the ID of the manager that launched the instance.
-     * Workers carry it so a terminating manager can find and stop its own workers.
+     * Pure tag set for a new instance: always {@code Name}, plus the free-slot hint when
+     * {@code freeSlots} is not {@link #UNKNOWN_FREE}. No AWS client is touched, so tests
+     * can call it directly.
      */
-    public static final String MANAGER_TAG = WorkerTermination.MANAGER_TAG;
-
-    /**
-     * Pure tag set for a new instance: always {@code Name}, the free-slot hint when
-     * {@code freeSlots} is not {@link #UNKNOWN_FREE}, and {@code managerID} when
-     * non-null and non-empty. No AWS client is touched, so tests can call it directly.
-     */
-    public static List<Tag> buildInstanceTags(String tagName, int freeSlots, String managerID) {
+    public static List<Tag> buildInstanceTags(String tagName, int freeSlots) {
         List<Tag> tags = new ArrayList<>();
         tags.add(Tag.builder().key("Name").value(tagName).build());
         if (freeSlots != UNKNOWN_FREE) {
             tags.add(Tag.builder().key(FREE_TAG).value(formatFreeSlots(freeSlots)).build());
-        }
-        if (managerID != null && !managerID.isEmpty()) {
-            tags.add(Tag.builder().key(MANAGER_TAG).value(managerID).build());
         }
         return tags;
     }
@@ -324,94 +306,6 @@ public String bucketName;
     }
 
     /**
-     * Stops the running/pending workers launched by {@code managerID}, then waits until they
-     * settle. There is no timeout: per the assignment the manager waits for its workers to
-     * finish. Any AWS error is logged and swallowed so a terminating manager is not blocked.
-     */
-    public void terminateWorkersOf(String managerID) {
-        if (managerID == null || managerID.trim().isEmpty()) {
-            return;
-        }
-        try {
-            WorkerTermination.StopResult result = WorkerTermination.stopWorkers(
-                    managerID,
-                    ec2Ops(),
-                    WorkerTermination.POLL_INTERVAL_MILLIS,
-                    new WorkerTermination.Sleeper() {
-                        @Override
-                        public void sleep(long millis) {
-                            try {
-                                Thread.sleep(millis);
-                            } catch (InterruptedException e) {
-                                Thread.currentThread().interrupt();
-                                throw new IllegalStateException(
-                                        "interrupted while waiting for workers to stop", e);
-                            }
-                        }
-                    });
-            if (client.App.debug) {
-                System.out.printf("[DEBUG] stopped %d worker(s) of manager %s%n",
-                        result.targeted.size(), managerID);
-            }
-        } catch (RuntimeException e) {
-            // Worker cleanup must never block the manager's own termination.
-            System.err.println("[AWS] could not stop workers of manager " + managerID
-                    + ": " + e.getMessage());
-        }
-    }
-
-    /** Adapts this singleton's EC2 client to the pure termination logic. */
-    private WorkerTermination.Ec2Ops ec2Ops() {
-        return new WorkerTermination.Ec2Ops() {
-            @Override
-            public List<WorkerTermination.InstanceRef> describeManagedInstances(String managerID) {
-                return describeWorkerInstances(managerID);
-            }
-
-            @Override
-            public void terminate(List<String> instanceIds) {
-                ec2.terminateInstances(TerminateInstancesRequest.builder()
-                        .instanceIds(instanceIds)
-                        .build());
-            }
-
-            @Override
-            public Map<String, String> states(List<String> instanceIds) {
-                return instanceStates(instanceIds);
-            }
-        };
-    }
-
-    /** Instances tagged as this manager's live workers, with plain tag maps for filtering. */
-    private List<WorkerTermination.InstanceRef> describeWorkerInstances(String managerID) {
-        List<WorkerTermination.InstanceRef> refs = new ArrayList<>();
-        String nextToken = null;
-        while (true) {
-            DescribeInstancesRequest request = DescribeInstancesRequest.builder()
-                    .filters(
-                            Filter.builder().name("tag:" + WorkerTermination.NAME_TAG)
-                                    .values(WorkerTermination.WORKER_TAG).build(),
-                            Filter.builder().name("tag:" + WorkerTermination.MANAGER_TAG)
-                                    .values(managerID).build(),
-                            Filter.builder().name("instance-state-name")
-                                    .values("running", "pending").build())
-                    .nextToken(nextToken)
-                    .build();
-            DescribeInstancesResponse response = ec2.describeInstances(request);
-            for (Reservation reservation : response.reservations()) {
-                for (Instance instance : reservation.instances()) {
-                    refs.add(toInstanceRef(instance));
-                }
-            }
-            nextToken = response.nextToken();
-            if (nextToken == null) {
-                break;
-            }
-        }
-        return refs;
-    }
-
-    /**
      * Current state per instance ID; an ID EC2 no longer reports is simply absent.
      * A filter (not {@code instanceIds}) keeps an unknown ID from failing the whole probe.
      */
@@ -429,8 +323,8 @@ public String bucketName;
                     .build());
             for (Reservation reservation : response.reservations()) {
                 for (Instance instance : reservation.instances()) {
-                    WorkerTermination.InstanceRef ref = toInstanceRef(instance);
-                    states.put(ref.id, ref.state);
+                    String state = instance.state() == null ? null : instance.state().nameAsString();
+                    states.put(instance.instanceId(), state);
                 }
             }
             nextToken = response.nextToken();
@@ -500,15 +394,6 @@ public String bucketName;
             }
         }
         return true;
-    }
-
-    private static WorkerTermination.InstanceRef toInstanceRef(Instance instance) {
-        Map<String, String> tags = new HashMap<>();
-        for (Tag tag : instance.tags()) {
-            tags.put(tag.key(), tag.value());
-        }
-        String state = instance.state() == null ? null : instance.state().nameAsString();
-        return new WorkerTermination.InstanceRef(instance.instanceId(), state, tags);
     }
 
     /** Lists running managers with a usable {@code free} tag, most free first. */

@@ -131,10 +131,25 @@ change the BOM property if it has to move.
   unread-but-received message is invisible for the visibility timeout. *(not written yet)*
 - `terminate` is sent **after** `DONE_TASK`, never before: ordering is not guaranteed, and a
   manager that stops accepting early never answers.
+- **The manager owns its worker list.** `Manager.workerInstanceIds` is a per-manager,
+  thread-safe set of the instance IDs `AWS.createEC2Instances` returned. `stopWorkers` snapshots
+  and terminates exactly those IDs and waits until they settle (no timeout). Workers are not
+  looked up by tag, so one manager can never stop another manager's workers; the shared
+  `Name=worker` tag is only a fleet label.
+- **A worker terminates its own instance when its JVM exits**, normally or by crash, so a dead
+  worker becomes visible to its manager as a `terminated` instance.
+- **Crash replacement:** every 10 s `Manager.reconcileWorkers` drops IDs that are
+  `terminated`/`shutting-down`/`stopped`/gone from EC2 and launches replacements only while
+  outstanding images remain; it never runs once `terminating` is set.
+- No tag-based worker termination (`AWS.terminateWorkersOf`, the `managerID` tag); it was
+  removed. Do not reintroduce it.
 - Full reasoning: `docs/superpowers/specs/2026-11-14-sqs-queue-sync-design.md` (gitignored).
 
 ## Known gaps and conflicts
 
+- The manager's worker set lives in memory only: a restarted manager does not know the workers
+  its previous incarnation launched. They finish their queue work and terminate their own
+  instances.
 - `manager-clients-n` availability ("running and serving fewer than N clients") is defined as an
   EC2 `clients` tag the manager keeps current and the client reads; tags are not strongly
   consistent, so the count is approximate. Not implemented.
