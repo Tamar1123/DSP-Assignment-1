@@ -142,22 +142,21 @@ public class WorkerTest {
 
     /**
      * Exercises the redirect handling in {@link Worker#downloadImage} on a loopback HTTP server:
-     * /img.png answers 301 with a relative Location to /final.png, which answers 200 with known
-     * bytes. The downloaded file must hold the final body and end in .png (extension from the
-     * final URL).
+     * /start.png answers 301 with a relative Location to /final.jpg, which answers 200 with known
+     * bytes. The downloaded file must hold the final body and end in .jpg (extension from the
+     * final URL, not the start URL).
      */
     @Test
     public void downloadImageFollowsRedirects() throws Exception {
-        final byte[] finalBytes = "fake png bytes".getBytes("UTF-8");
-        final AtomicReference<String> extension = new AtomicReference<String>("(none)");
+        final byte[] finalBytes = "fake jpg bytes".getBytes("UTF-8");
 
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/img.png", exchange -> {
-            exchange.getResponseHeaders().set("Location", "/final.png");
+        server.createContext("/start.png", exchange -> {
+            exchange.getResponseHeaders().set("Location", "/final.jpg");
             exchange.sendResponseHeaders(301, -1);
             exchange.close();
         });
-        server.createContext("/final.png", exchange -> {
+        server.createContext("/final.jpg", exchange -> {
             exchange.sendResponseHeaders(200, finalBytes.length);
             exchange.getResponseBody().write(finalBytes);
             exchange.getResponseBody().close();
@@ -169,18 +168,41 @@ public class WorkerTest {
         Path tempFile = null;
         try {
             tempFile = w.downloadImage("http://127.0.0.1:"
-                    + server.getAddress().getPort() + "/img.png");
+                    + server.getAddress().getPort() + "/start.png");
             assertArrayEquals(finalBytes, Files.readAllBytes(tempFile),
                     "the downloaded file must hold the final response body");
             String name = tempFile.getFileName().toString();
-            extension.set(name.substring(name.lastIndexOf('.')));
-            assertEquals(".png", extension.get(),
-                    "the extension must come from the final URL");
+            assertEquals(".jpg", name.substring(name.lastIndexOf('.')),
+                    "the extension must come from the final URL, not the start URL");
         } finally {
             server.stop(0);
             if (tempFile != null) {
                 Files.deleteIfExists(tempFile);
             }
+        }
+    }
+
+    /** A 301 with a blank Location must fail the download and must not leave a temp file. */
+    @Test
+    public void downloadImageFailsOnBlankLocation() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/missing.png", exchange -> {
+            // No Location header at all.
+            exchange.sendResponseHeaders(301, -1);
+            exchange.close();
+        });
+        server.start();
+
+        Worker w = new Worker();
+        try {
+            Path tempFile = w.downloadImage("http://127.0.0.1:"
+                    + server.getAddress().getPort() + "/missing.png");
+            Files.deleteIfExists(tempFile);
+            fail("a redirect without Location must throw");
+        } catch (RuntimeException expected) {
+            // expected
+        } finally {
+            server.stop(0);
         }
     }
 

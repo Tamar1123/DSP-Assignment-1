@@ -121,55 +121,80 @@ public class Worker implements Runnable {
         // hops, and we need the final URL to derive the extension.
         int status;
         HttpURLConnection connection = null;
-        for (int hop = 0; ; hop++) {
-            connection = (HttpURLConnection) url.openConnection();
-            connection.setRequestProperty("User-Agent", "Mozilla/5.0");
-            connection.setConnectTimeout(10000);
-            connection.setReadTimeout(15000);
-            connection.setInstanceFollowRedirects(false);
+        try {
+            for (int hop = 0; ; hop++) {
+                connection = (HttpURLConnection) url.openConnection();
+                connection.setRequestProperty("User-Agent", "Mozilla/5.0");
+                connection.setConnectTimeout(10000);
+                connection.setReadTimeout(15000);
+                connection.setInstanceFollowRedirects(false);
 
-            status = connection.getResponseCode();
-            if (status >= 300 && status < 400) {
-                String location = connection.getHeaderField("Location");
-                try {
-                    URL redirect = location == null ? null : new URL(url, location);
-                    if (redirect == null || redirect.toString().isEmpty()) {
-                        throw new RuntimeException("redirect " + status + " without a Location header");
+                status = connection.getResponseCode();
+                if (status >= 300 && status < 400) {
+                    String location = connection.getHeaderField("Location");
+                    try {
+                        URL redirect = (location == null || location.trim().isEmpty())
+                                ? null : new URL(url, location);
+                        if (redirect == null) {
+                            throw new RuntimeException("redirect " + status + " without a Location header");
+                        }
+                        url = redirect;
+                    } finally {
+                        try {
+                            connection.disconnect();
+                        } catch (Exception ignored) {
+                        }
                     }
-                    url = redirect;
+                    if (hop >= MAX_REDIRECTS) {
+                        throw new RuntimeException("too many redirects (more than " + MAX_REDIRECTS + ")");
+                    }
+                    continue;
+                }
+                break;
+            }
+
+            if (status < 200 || status >= 300) {
+                throw new RuntimeException("HTTP error " + status + " while downloading image");
+            }
+
+            String extension = ".png";
+            String pathPart = url.getPath();
+            int dotIndex = pathPart.lastIndexOf('.');
+            if (dotIndex != -1 && dotIndex < pathPart.length() - 1) {
+                String ext = pathPart.substring(dotIndex).toLowerCase();
+                if (ext.matches("\\.(png|jpg|jpeg|gif|bmp|tif|tiff)")) {
+                    extension = ext;
+                }
+            }
+
+            Path tempFile = Files.createTempFile("ocr_" + UUID.randomUUID(), extension);
+            try {
+                InputStream in = connection.getInputStream();
+                try {
+                    Files.copy(in, tempFile, StandardCopyOption.REPLACE_EXISTING);
                 } finally {
                     try {
-                        connection.disconnect();
+                        in.close();
                     } catch (Exception ignored) {
                     }
                 }
-                if (hop >= MAX_REDIRECTS) {
-                    throw new RuntimeException("too many redirects (more than " + MAX_REDIRECTS + ")");
+                return tempFile;
+            } catch (Exception e) {
+                // Do not leave a half-written temp file behind.
+                try {
+                    Files.deleteIfExists(tempFile);
+                } catch (Exception ignored) {
                 }
-                continue;
+                throw e;
             }
-            break;
-        }
-
-        if (status < 200 || status >= 300) {
-            throw new RuntimeException("HTTP error " + status + " while downloading image");
-        }
-
-        String extension = ".png";
-        String pathPart = url.getPath();
-        int dotIndex = pathPart.lastIndexOf('.');
-        if (dotIndex != -1 && dotIndex < pathPart.length() - 1) {
-            String ext = pathPart.substring(dotIndex).toLowerCase();
-            if (ext.matches("\\.(png|jpg|jpeg|gif|bmp|tif|tiff)")) {
-                extension = ext;
+        } finally {
+            if (connection != null) {
+                try {
+                    connection.disconnect();
+                } catch (Exception ignored) {
+                }
             }
         }
-
-        Path tempFile = Files.createTempFile("ocr_" + UUID.randomUUID(), extension);
-        try (InputStream in = connection.getInputStream()) {
-            Files.copy(in, tempFile, StandardCopyOption.REPLACE_EXISTING);
-        }
-        return tempFile;
     }
 
     private void handle(Received received) {
