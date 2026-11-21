@@ -71,6 +71,42 @@ public class AWS {
         return countLiveInstances("manager");
     }
 
+    /**
+     * Number of instances tagged {@code tagName} in any of the given EC2 states. A
+     * shutting-down worker still occupies the fleet (the cap / its slot) until EC2
+     * finishes removing it, so callers counting workers include "shutting-down" among
+     * the live states.
+     */
+    private int countInstances(String tagName, String... states) {
+        if (states == null || states.length == 0) {
+            throw new IllegalArgumentException("at least one instance state is required");
+        }
+        int count = 0;
+        String nextToken = null;
+        try {
+            while (true) {
+                DescribeInstancesRequest request = DescribeInstancesRequest.builder()
+                        .filters(
+                                Filter.builder().name("tag:Name").values(tagName).build(),
+                                Filter.builder().name("instance-state-name").values(states).build())
+                        .nextToken(nextToken)
+                        .build();
+                DescribeInstancesResponse response = ec2.describeInstances(request);
+                for (Reservation reservation : response.reservations()) {
+                    count += reservation.instances().size();
+                }
+                nextToken = response.nextToken();
+                if (nextToken == null) {
+                    break;
+                }
+            }
+        } catch (RuntimeException e) {
+            throw new IllegalStateException("Could not count " + tagName + " instances in "
+                    + String.join("/", states), e);
+        }
+        return count;
+    }
+
     public static AWS getInstance() {
         return InstanceHolder.INSTANCE;
     }
@@ -266,43 +302,26 @@ public String bucketName;
     }
 
     /**
-     * Number of live workers (running or pending). "Live" is stricter than "running" so a
-     * worker that is still booting counts against the cap too.
+     * Number of live workers: running, pending, or shutting-down. "Live" is stricter than
+     * "running" so a worker that is still booting counts against the cap too, and a
+     * shutting-down worker still occupies the fleet until EC2 removes it, so counting it as
+     * live avoids launching a replacement while it terminates.
      */
     public int runningWorkerCount() {
-        return countLiveInstances("worker");
+        return countInstances("worker", "running", "pending", "shutting-down");
     }
 
-    /** Number of live manager and worker instances, the manager included. */
+    /**
+     * Number of live manager and worker instances, the manager included. Managers count as
+     * running + pending only; workers additionally count while shutting-down.
+     */
     public int runningInstanceCount() {
-        return countLiveInstances("manager") + countLiveInstances("worker");
+        return countLiveInstances("manager") + countInstances("worker", "running", "pending", "shutting-down");
     }
 
+    /** Live instances of a role in the strict states: running or pending (managers). */
     private int countLiveInstances(String tagName) {
-        int count = 0;
-        String nextToken = null;
-        try {
-            while (true) {
-                DescribeInstancesRequest request = DescribeInstancesRequest.builder()
-                        .filters(
-                                Filter.builder().name("tag:Name").values(tagName).build(),
-                                Filter.builder().name("instance-state-name")
-                                        .values("running", "pending").build())
-                        .nextToken(nextToken)
-                        .build();
-                DescribeInstancesResponse response = ec2.describeInstances(request);
-                for (Reservation reservation : response.reservations()) {
-                    count += reservation.instances().size();
-                }
-                nextToken = response.nextToken();
-                if (nextToken == null) {
-                    break;
-                }
-            }
-        } catch (RuntimeException e) {
-            throw new IllegalStateException("Could not count live " + tagName + " instances", e);
-        }
-        return count;
+        return countInstances(tagName, "running", "pending");
     }
 
     /**

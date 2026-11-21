@@ -1006,6 +1006,22 @@ public class ManagerTest {
     }
 
     @Test
+    public void reconcileKeepsShuttingDownWorker() {
+        Map<String, String> states = new HashMap<String, String>();
+        states.put("i-dying", "shutting-down");
+        final List<Integer> launchCounts = new ArrayList<Integer>();
+        Manager m = reconcileManager(states, launchCounts);
+        m.getWorkerInstanceIds().add("i-dying");
+
+        reconcile(m);
+
+        assertEquals(new HashSet<String>(Arrays.asList("i-dying")), m.getWorkerInstanceIds(),
+                "a shutting-down worker is still terminating and must stay in the set");
+        assertTrue(launchCounts.isEmpty(),
+                "a shutting-down worker still occupies the fleet, so no replacement is launched");
+    }
+
+    @Test
     public void reconcileKeepsRunningWorker() {
         Map<String, String> states = new HashMap<String, String>();
         states.put("i-live", "running");

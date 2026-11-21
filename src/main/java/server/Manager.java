@@ -640,10 +640,13 @@ public class Manager implements Runnable {
         }
     }
 
-    /** EC2 states in which a worker can no longer process messages. */
+    /**
+     * EC2 states in which a worker can no longer process messages. A worker in
+     * "shutting-down" is still terminating (it may be a cap kill, not a crash) and is
+     * counted as live until EC2 removes it, so it is not dead here.
+     */
     private static boolean isDeadWorkerState(String state) {
         return state.equals("terminated")
-                || state.equals("shutting-down")
                 || state.equals("stopped");
     }
 
