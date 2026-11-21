@@ -7,7 +7,7 @@ import java.util.concurrent.atomic.AtomicLong;
 // keep submission order. Tests can run jobs on the calling thread instead of starting it.
 final class IoWorker {
     static final int FINISH = 0;
-    static final int DISPATCH = 1;
+    static final int FAN_OUT = 1;
     private static final int STOP_PRIORITY = Integer.MAX_VALUE;
 
     // A blocking unit of work.
