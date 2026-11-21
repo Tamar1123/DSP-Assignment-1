@@ -33,7 +33,7 @@ public class Manager implements Runnable {
     private static final int FAN_OUT_BATCH = 10;
 
     /** Maximum EC2 instances (manager plus workers) the system may run. */
-    static final int MAX_INSTANCES = 19;
+    static final int MAX_INSTANCES = 9;
 
     private static final String WORKER_TAG = "worker";
     private static final String WORKER_JAR_KEY = AWS.S3_PREFIX + "Worker.jar";
