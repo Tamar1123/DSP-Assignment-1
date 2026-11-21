@@ -32,7 +32,7 @@ final class CompleteClientJob extends IoWorker.Job {
                     .send(Message.createDoneTask(summaryLocation, task.localAppID));
             m.clients().markServed();
             m.logDebug("finished client " + task.localAppID + " (served " + m.clients().served()
-                    + ", free slots " + (m.clients().freeSlots()) + ")");
+                    + ")");
         } catch (Exception e) {
             // The summary could not be written or sent: tell the client so it does not hang.
             System.err.println("[MANAGER] could not finish client " + task.localAppID
