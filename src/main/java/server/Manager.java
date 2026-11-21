@@ -30,8 +30,6 @@ public class Manager implements Runnable {
     private static final int RECEIVE_WAIT_SECONDS = 1;
     // Visibility delay for a NEW_TASK a full manager gives back, so it is not busy-looped.
     private static final int REQUEUE_DELAY_SECONDS = 5;
-    // NEW_IMAGE_TASK batch size.
-    private static final int IMAGE_TASK_BATCH = 10;
     // How often run() reconciles the worker set and launches crash replacements.
     private static final long WORKER_RECONCILE_INTERVAL_MILLIS = 10000L;
 
@@ -52,6 +50,51 @@ public class Manager implements Runnable {
     private final WorkerOrchestrator workers;
 
     private final ClientRegistry clients;
+    private final ManagerSeams seams = new ManagerSeams() {
+        public String managerID() {
+            return managerID;
+        }
+
+        public Queue workerQueue() {
+            return workerQueue;
+        }
+
+        public ClientRegistry clients() {
+            return clients;
+        }
+
+        public void submit(IoWorker.Job job) {
+            ioWorker.submit(job);
+        }
+
+        public void runPendingFinishes() {
+            Manager.this.runPendingFinishes();
+        }
+
+        public void updateFreeSlots() {
+            Manager.this.updateFreeSlots();
+        }
+
+        public List<String> readUrls(String location) throws IOException {
+            return Manager.this.readUrls(location);
+        }
+
+        public void writeSummary(ClientTask task, String location) throws IOException {
+            Manager.this.writeSummary(task, location);
+        }
+
+        public void ensureWorkers(int outstanding) {
+            Manager.this.ensureWorkers(outstanding);
+        }
+
+        public void failTask(ClientTask task, String description) {
+            Manager.this.failTask(task, description);
+        }
+
+        public void logDebug(String message) {
+            Manager.this.logDebug(message);
+        }
+    };
 
     // Runs every blocking job, finishes before fan-outs, on one thread.
     private final IoWorker ioWorker;
@@ -356,7 +399,7 @@ public class Manager implements Runnable {
         }
         ClientTask task = new ClientTask(localAppID, msg.getInputFileLocation());
         clients.add(task);
-        ioWorker.submit(new SplitInputJob(task));
+        ioWorker.submit(new SplitInputJob(seams, task));
         logDebug("admitted client " + localAppID);
         return false;
     }
@@ -378,7 +421,7 @@ public class Manager implements Runnable {
         int left = task.outstanding.decrementAndGet();
         logDebug("client " + msg.getLocalAppID() + ": " + left + " image(s) outstanding");
         if (left <= 0) {
-            ioWorker.submit(new CompleteClientJob(task));
+            ioWorker.submit(new CompleteClientJob(seams, task));
         }
     }
 
@@ -536,101 +579,13 @@ public class Manager implements Runnable {
         }
     }
 
-    private static String describe(Exception e) {
+    static String describe(Exception e) {
         return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
     }
 
     private void logDebug(String message) {
         if (debug || client.App.debug) {
             System.out.println("[DEBUG] " + message);
-        }
-    }
-
-    // Reads the input, sends image tasks in batches, drains finishes between batches.
-    private final class SplitInputJob extends IoWorker.Job {
-        private final ClientTask task;
-
-        SplitInputJob(ClientTask task) {
-            super(IoWorker.DISPATCH);
-            this.task = task;
-        }
-
-        @Override
-        public void run() {
-            try {
-                updateFreeSlots(); // advertise capacity at admission, before the URLs fan out
-                List<String> urls = Collections.unmodifiableList(readUrls(task.inputFileLocation));
-                task.urls = urls;
-                task.outstanding.set(urls.size());
-                List<Message> batch = new ArrayList<Message>(IMAGE_TASK_BATCH);
-                for (String url : urls) {
-                    batch.add(Message.createNewImageTask(url, task.localAppID, managerID));
-                    if (batch.size() == IMAGE_TASK_BATCH) {
-                        logDebug("sending " + batch.size() + " NEW_IMAGE_TASK to " + Queues.workerQueueName());
-                        workerQueue.sendAll(batch);
-                        batch = new ArrayList<Message>(IMAGE_TASK_BATCH);
-                        runPendingFinishes();
-                    }
-                }
-                if (!batch.isEmpty()) {
-                    logDebug("sending " + batch.size() + " NEW_IMAGE_TASK to " + Queues.workerQueueName());
-                    workerQueue.sendAll(batch);
-                }
-                logDebug("admitted client " + task.localAppID + " with " + urls.size() + " images");
-                if (urls.isEmpty()) {
-                    ioWorker.submit(new CompleteClientJob(task)); // empty input finishes at once
-                }
-                ensureWorkers(totalOutstanding());
-            } catch (Exception e) {
-                failTask(task, "Input failure: " + describe(e));
-            }
-        }
-    }
-
-    // Answers once: summary, DONE_TASK, remove the task, free the slot.
-    private final class CompleteClientJob extends IoWorker.Job {
-        private final ClientTask task;
-
-        CompleteClientJob(ClientTask task) {
-            super(IoWorker.FINISH);
-            this.task = task;
-        }
-
-        @Override
-        public void run() {
-            if (!task.done.compareAndSet(false, true)) {
-                return; // answered once
-            }
-            String summaryLocation = Queues.isDev()
-                    ? task.inputFileLocation + ".summary"
-                    : AWS.S3_PREFIX + "summaries/" + task.localAppID + ".txt";
-            try {
-                writeSummary(task, summaryLocation);
-                logDebug("summary written at " + summaryLocation + "; sending DONE_TASK to "
-                        + Queues.clientQueueName(task.localAppID));
-                Queues.get(Queues.clientQueueName(task.localAppID))
-                        .send(Message.createDoneTask(summaryLocation, task.localAppID));
-                clients.markServed();
-                logDebug("finished client " + task.localAppID + " (served " + clients.served()
-                        + ", free slots " + (clients.freeSlots()) + ")");
-            } catch (Exception e) {
-                // The summary could not be written or sent: tell the client so it does not hang.
-                System.err.println("[MANAGER] could not finish client " + task.localAppID
-                        + ": " + describe(e));
-                try {
-                    Message failed = Message.createDoneTask("Summary failure: " + describe(e),
-                            task.localAppID);
-                    failed.setError(true);
-                    Queues.get(Queues.clientQueueName(task.localAppID)).send(failed);
-                } catch (Exception sendFailure) {
-                    System.err.println("[MANAGER] could not notify client " + task.localAppID
-                            + " of failure: " + sendFailure.getMessage());
-                }
-            } finally {
-                // Free the slot last, and always: a failed summary must not leak a client slot.
-                clients.remove(task);
-                updateFreeSlots();
-            }
         }
     }
 
