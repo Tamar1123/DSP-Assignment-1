@@ -17,61 +17,33 @@ class ClientRegistry {
         this.maxClients = maxClients;
     }
 
-    boolean hasCapacity() {
-        return tasks.size() < maxClients;
-    }
+    boolean hasCapacity() { return tasks.size() < maxClients; }
 
-    int maxClients() {
-        return maxClients;
-    }
+    int maxClients() { return maxClients; }
 
-    int freeSlots() {
-        return maxClients - tasks.size();
-    }
+    int freeSlots() { return maxClients - tasks.size(); }
 
-    int size() {
-        return tasks.size();
-    }
+    int size() { return tasks.size(); }
 
-    boolean isEmpty() {
-        return tasks.isEmpty();
-    }
+    boolean isEmpty() { return tasks.isEmpty(); }
 
-    boolean contains(String localAppID) {
-        return tasks.containsKey(localAppID);
-    }
+    boolean contains(String localAppID) { return tasks.containsKey(localAppID); }
 
-    ClientTask get(String localAppID) {
-        return tasks.get(localAppID);
-    }
+    ClientTask get(String localAppID) { return tasks.get(localAppID); }
 
-    void add(ClientTask task) {
-        tasks.put(task.localAppID, task);
-    }
+    void add(ClientTask task) { tasks.put(task.localAppID, task); }
 
-    void remove(ClientTask task) {
-        tasks.remove(task.localAppID, task);
-    }
+    void remove(ClientTask task) { tasks.remove(task.localAppID, task); }
 
-    Collection<ClientTask> all() {
-        return tasks.values();
-    }
+    Collection<ClientTask> all() { return tasks.values(); }
 
-    int served() {
-        return served.get();
-    }
+    int served() { return served.get(); }
 
-    int rejected() {
-        return rejected.get();
-    }
+    int rejected() { return rejected.get(); }
 
-    void markServed() {
-        served.incrementAndGet();
-    }
+    void markServed() { served.incrementAndGet(); }
 
-    void markRejected() {
-        rejected.incrementAndGet();
-    }
+    void markRejected() { rejected.incrementAndGet(); }
 
     // Image tasks still unanswered across all clients.
     int totalOutstanding() {

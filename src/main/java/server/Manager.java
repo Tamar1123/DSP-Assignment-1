@@ -43,29 +43,17 @@ public class Manager implements Runnable {
 
     private final ClientRegistry clients;
     private final ManagerSeams seams = new ManagerSeams() {
-        public String managerID() {
-            return managerID;
-        }
+        public String managerID() { return managerID; }
 
-        public Queue workerQueue() {
-            return workerQueue;
-        }
+        public Queue workerQueue() { return workerQueue; }
 
-        public ClientRegistry clients() {
-            return clients;
-        }
+        public ClientRegistry clients() { return clients; }
 
-        public void submit(IoWorker.Job job) {
-            ioWorker.submit(job);
-        }
+        public void submit(IoWorker.Job job) { ioWorker.submit(job); }
 
-        public void runPendingFinishes() {
-            Manager.this.runPendingFinishes();
-        }
+        public void runPendingFinishes() { Manager.this.runPendingFinishes(); }
 
-        public void updateFreeSlots() {
-            Manager.this.updateFreeSlots();
-        }
+        public void updateFreeSlots() { Manager.this.updateFreeSlots(); }
 
         public List<String> readUrls(String location) throws IOException {
             return Manager.this.readUrls(location);
@@ -75,17 +63,13 @@ public class Manager implements Runnable {
             Manager.this.writeSummary(task, location);
         }
 
-        public void ensureWorkers(int outstanding) {
-            Manager.this.ensureWorkers(outstanding);
-        }
+        public void ensureWorkers(int outstanding) { Manager.this.ensureWorkers(outstanding); }
 
         public void failTask(ClientTask task, String description) {
             Manager.this.failTask(task, description);
         }
 
-        public void logDebug(String message) {
-            Manager.this.logDebug(message);
-        }
+        public void logDebug(String message) { Manager.this.logDebug(message); }
     };
 
     // Runs every blocking job, finishes before fan-outs, on one thread.
@@ -101,9 +85,7 @@ public class Manager implements Runnable {
     private volatile String terminateRequester;
 
     // Test helper: fixed manager id, and therefore fixed queue names.
-    public Manager(String managerID) {
-        this(managerID, 10, 1);
-    }
+    public Manager(String managerID) { this(managerID, 10, 1); }
 
     // maxClients is manager-clients-n; tasksPerWorker is worker-files-n.
     public Manager(String managerID, int maxClients, int tasksPerWorker) {
@@ -121,68 +103,42 @@ public class Manager implements Runnable {
         this.workerQueue = Queues.get(Queues.workerQueueName());
         this.doneOcrQueue = Queues.get(Queues.doneOcrQueueName(managerID));
         this.workers = new WorkerOrchestrator(new WorkerOrchestrator.Port() {
-            public int liveWorkerCount() {
-                return Manager.this.liveWorkerCount();
-            }
+            public int liveWorkerCount() { return Manager.this.liveWorkerCount(); }
 
-            public int liveInstanceCount() {
-                return Manager.this.liveInstanceCount();
-            }
+            public int liveInstanceCount() { return Manager.this.liveInstanceCount(); }
 
             public List<String> launchWorkerInstances(int count) {
                 return Manager.this.launchWorkerInstances(count);
             }
 
-            public void terminateInstances(List<String> ids) {
-                Manager.this.terminateInstances(ids);
-            }
+            public void terminateInstances(List<String> ids) { Manager.this.terminateInstances(ids); }
 
             public Map<String, String> workerStates(Collection<String> ids) {
                 return Manager.this.workerStates(ids);
             }
 
-            public void ensureWorkers(int outstanding) {
-                Manager.this.ensureWorkers(outstanding);
-            }
+            public void ensureWorkers(int outstanding) { Manager.this.ensureWorkers(outstanding); }
 
-            public int totalOutstanding() {
-                return Manager.this.totalOutstanding();
-            }
+            public int totalOutstanding() { return Manager.this.totalOutstanding(); }
 
-            public boolean isTerminating() {
-                return terminating.get();
-            }
+            public boolean isTerminating() { return terminating.get(); }
 
-            public void log(String message) {
-                logDebug(message);
-            }
+            public void log(String message) { logDebug(message); }
         }, tasksPerWorker);
     }
 
-    public String getManagerID() {
-        return managerID;
-    }
+    public String getManagerID() { return managerID; }
 
-    public boolean isRunning() {
-        return running;
-    }
+    public boolean isRunning() { return running; }
 
     // True while this manager has a free client slot.
-    public boolean hasCapacity() {
-        return clients.hasCapacity();
-    }
+    public boolean hasCapacity() { return clients.hasCapacity(); }
 
-    public int getActiveClients() {
-        return clients.size();
-    }
+    public int getActiveClients() { return clients.size(); }
 
-    public int getServedClients() {
-        return clients.served();
-    }
+    public int getServedClients() { return clients.served(); }
 
-    public int getRejectedClients() {
-        return clients.rejected();
-    }
+    public int getRejectedClients() { return clients.rejected(); }
 
     // One router tick: drains done-OCR without waiting, then polls requests. A full manager
     // requeues the request on manager_queue; duplicates are ignored. No S3 or EC2 call here.
@@ -215,19 +171,13 @@ public class Manager implements Runnable {
     }
 
     // Test seam: runs every pending IoWorker job inline, finishes first.
-    public void runPendingIo() {
-        ioWorker.runAll();
-    }
+    public void runPendingIo() { ioWorker.runAll(); }
 
     // Test seam: runs one pending IoWorker job; false when none is queued.
-    public boolean runOnePendingJob() {
-        return ioWorker.runOne();
-    }
+    public boolean runOnePendingJob() { return ioWorker.runOne(); }
 
     // Runs queued finishes now; fan-out calls this between batches.
-    public void runPendingFinishes() {
-        ioWorker.runPendingFinishes();
-    }
+    public void runPendingFinishes() { ioWorker.runPendingFinishes(); }
 
     // Starts the IoWorker plus the Router loop. args: manager-clients-n, worker-files-n.
     public static void main(String[] args) {
@@ -302,9 +252,7 @@ public class Manager implements Runnable {
         }
     }
 
-    public void shutdown() {
-        running = false;
-    }
+    public void shutdown() { running = false; }
 
     private void handle(Received received, Queue source) {
         Message msg = received.getMessage();
@@ -448,38 +396,24 @@ public class Manager implements Runnable {
         }
     }
 
-    protected void ensureWorkers(int outstanding) {
-        workers.ensure(outstanding);
-    }
+    protected void ensureWorkers(int outstanding) { workers.ensure(outstanding); }
 
     // Live workers fleet-wide, all managers included; protected so tests never reach AWS.
-    protected int liveWorkerCount() {
-        return AWS.getInstance().runningWorkerCount();
-    }
+    protected int liveWorkerCount() { return AWS.getInstance().runningWorkerCount(); }
 
     // Live instances fleet-wide (managers plus workers); protected so tests never reach AWS.
-    protected int liveInstanceCount() {
-        return AWS.getInstance().runningInstanceCount();
-    }
+    protected int liveInstanceCount() { return AWS.getInstance().runningInstanceCount(); }
 
-    protected List<String> launchWorkers(int count) {
-        return workers.launch(count);
-    }
+    protected List<String> launchWorkers(int count) { return workers.launch(count); }
 
     // Launches worker instances; protected so tests can supply IDs without reaching AWS.
-    protected List<String> launchWorkerInstances(int count) {
-        return workers.launchInstances(count);
-    }
+    protected List<String> launchWorkerInstances(int count) { return workers.launchInstances(count); }
 
     // User-data script for one worker; package-private so tests can check it without AWS.
-    String workerLaunchScript(String bucketName) {
-        return workers.launchScript(bucketName);
-    }
+    String workerLaunchScript(String bucketName) { return workers.launchScript(bucketName); }
 
 
-    private int totalOutstanding() {
-        return clients.totalOutstanding();
-    }
+    private int totalOutstanding() { return clients.totalOutstanding(); }
 
     // Fails a task once: error reply, remove it, free the slot. IoWorker only.
     private void failTask(ClientTask task, String description) {
@@ -500,9 +434,7 @@ public class Manager implements Runnable {
     }
 
     // Publishes free slots as the EC2 free tag; a hint that may lag. IoWorker only.
-    private void updateFreeSlots() {
-        publishFreeSlots(clients.freeSlots());
-    }
+    private void updateFreeSlots() { publishFreeSlots(clients.freeSlots()); }
 
     // Protected seam for the free-slot tag write; no-op in dev so tests never reach AWS.
     protected void publishFreeSlots(int free) {
@@ -525,9 +457,7 @@ public class Manager implements Runnable {
         return clientFiles.readUrls(inputFileLocation);
     }
 
-    private void stopWorkers() {
-        workers.stop();
-    }
+    private void stopWorkers() { workers.stop(); }
 
     // Requests termination through AWS; protected so termination can be tested offline.
     protected void terminateInstances(List<String> instanceIds) {
@@ -539,9 +469,7 @@ public class Manager implements Runnable {
         return AWS.getInstance().instanceStates(instanceIds);
     }
 
-    protected void reconcileWorkers() {
-        workers.reconcile();
-    }
+    protected void reconcileWorkers() { workers.reconcile(); }
 
     // Reconciles at most once per WORKER_RECONCILE_INTERVAL_MILLIS.
     private void reconcileWorkersIfDue() {
@@ -554,9 +482,7 @@ public class Manager implements Runnable {
     }
 
     // Test seam: the IDs of the workers this manager launched.
-    protected Set<String> getWorkerInstanceIds() {
-        return workers.ids();
-    }
+    protected Set<String> getWorkerInstanceIds() { return workers.ids(); }
 
     // Deletes the per-manager done-OCR queue in AWS mode; a no-op in dev.
     protected void deleteDoneOcrQueueIfAws() {

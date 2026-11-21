@@ -57,9 +57,7 @@ class WorkerOrchestrator {
         return (urlCount - 1) / workerFilesN + 1;
     }
 
-    Set<String> ids() {
-        return workerInstanceIds;
-    }
+    Set<String> ids() { return workerInstanceIds; }
 
     // Starts the workers needed for the outstanding images, sized against the whole fleet and
     // capped by the global instance limit.
