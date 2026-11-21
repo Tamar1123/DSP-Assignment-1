@@ -149,7 +149,7 @@ public class SqsQueue implements Queue {
                                         .queueUrl(resolved)
                                         .attributes(java.util.Collections.singletonMap(
                                                 software.amazon.awssdk.services.sqs.model.QueueAttributeName
-                                                        .VISIBILITY_TIMEOUT, "300"))
+                                                        .VISIBILITY_TIMEOUT, "60"))
                                         .build());
                     } catch (Exception e) {
                         System.err.println("[WARN] could not set visibility timeout on "

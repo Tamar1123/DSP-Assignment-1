@@ -11,7 +11,13 @@ import java.awt.Font;
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
+
+import com.sun.net.httpserver.HttpServer;
+import java.net.InetSocketAddress;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -132,6 +138,50 @@ public class WorkerTest {
         List<Received> again = Queues.get(Queues.workerQueueName()).receive(1, 1);
         assertEquals(1, again.size());
         assertEquals("http://img", again.get(0).getMessage().getImageURL());
+    }
+
+    /**
+     * Exercises the redirect handling in {@link Worker#downloadImage} on a loopback HTTP server:
+     * /img.png answers 301 with a relative Location to /final.png, which answers 200 with known
+     * bytes. The downloaded file must hold the final body and end in .png (extension from the
+     * final URL).
+     */
+    @Test
+    public void downloadImageFollowsRedirects() throws Exception {
+        final byte[] finalBytes = "fake png bytes".getBytes("UTF-8");
+        final AtomicReference<String> extension = new AtomicReference<String>("(none)");
+
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/img.png", exchange -> {
+            exchange.getResponseHeaders().set("Location", "/final.png");
+            exchange.sendResponseHeaders(301, -1);
+            exchange.close();
+        });
+        server.createContext("/final.png", exchange -> {
+            exchange.sendResponseHeaders(200, finalBytes.length);
+            exchange.getResponseBody().write(finalBytes);
+            exchange.getResponseBody().close();
+            exchange.close();
+        });
+        server.start();
+
+        Worker w = new Worker();
+        Path tempFile = null;
+        try {
+            tempFile = w.downloadImage("http://127.0.0.1:"
+                    + server.getAddress().getPort() + "/img.png");
+            assertArrayEquals(finalBytes, Files.readAllBytes(tempFile),
+                    "the downloaded file must hold the final response body");
+            String name = tempFile.getFileName().toString();
+            extension.set(name.substring(name.lastIndexOf('.')));
+            assertEquals(".png", extension.get(),
+                    "the extension must come from the final URL");
+        } finally {
+            server.stop(0);
+            if (tempFile != null) {
+                Files.deleteIfExists(tempFile);
+            }
+        }
     }
 
     @Test

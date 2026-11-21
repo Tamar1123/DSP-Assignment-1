@@ -106,14 +106,51 @@ public class Worker implements Runnable {
         }
     }
 
-    private Path downloadImage(String imageURL) throws Exception {
-        URL url = new URL(imageURL);
-        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-        connection.setRequestProperty("User-Agent", "Mozilla/5.0"); 
-        connection.setConnectTimeout(10000); 
-        connection.setReadTimeout(15000);
+    /** Max redirect hops we are willing to follow. */
+    static final int MAX_REDIRECTS = 5;
 
-        int status = connection.getResponseCode();
+    /**
+     * Downloads the image at {@code imageURL} to a temp file, following up to {@link #MAX_REDIRECTS}
+     * redirects manually. The extension is derived from the final URL.
+     * Package-private so {@code WorkerTest} can exercise it without OCR.
+     */
+    Path downloadImage(String imageURL) throws Exception {
+        URL url = new URL(imageURL);
+
+        // Follow redirects by hand: automatic redirects drop the body and headers on cross-protocol
+        // hops, and we need the final URL to derive the extension.
+        int status;
+        HttpURLConnection connection = null;
+        for (int hop = 0; ; hop++) {
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestProperty("User-Agent", "Mozilla/5.0");
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(15000);
+            connection.setInstanceFollowRedirects(false);
+
+            status = connection.getResponseCode();
+            if (status >= 300 && status < 400) {
+                String location = connection.getHeaderField("Location");
+                try {
+                    URL redirect = location == null ? null : new URL(url, location);
+                    if (redirect == null || redirect.toString().isEmpty()) {
+                        throw new RuntimeException("redirect " + status + " without a Location header");
+                    }
+                    url = redirect;
+                } finally {
+                    try {
+                        connection.disconnect();
+                    } catch (Exception ignored) {
+                    }
+                }
+                if (hop >= MAX_REDIRECTS) {
+                    throw new RuntimeException("too many redirects (more than " + MAX_REDIRECTS + ")");
+                }
+                continue;
+            }
+            break;
+        }
+
         if (status < 200 || status >= 300) {
             throw new RuntimeException("HTTP error " + status + " while downloading image");
         }
