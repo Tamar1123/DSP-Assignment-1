@@ -7,7 +7,14 @@ import utils.*;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Scanner;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -126,19 +133,25 @@ public class ManagerTest {
     }
 
     @Test
-    public void fullManagerDoesNotPollTheRequestQueue() throws Exception {
+    public void fullManagerStillPollsAndAnswersBusy() throws Exception {
         String in = inputFile("http://a");
         Manager m = new Manager("mgr-8", 1, 5);
         Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-8a"));
         m.startOnce();
         assertFalse(m.hasCapacity());
 
+        // Admission always polls: a request without a free slot is answered busy and deleted,
+        // not left on the queue for another manager.
         Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-8b"));
         m.startOnce();
-        // Left on the request queue for a manager with room, not answered busy here.
-        assertTrue(Queues.get(Queues.clientQueueName("app-8b")).receive(1, 1).isEmpty());
-        assertEquals(0, m.getRejectedClients());
-        assertEquals(1, Queues.get(Queues.managerQueueName()).receive(10, 1).size());
+        List<Received> busy = Queues.get(Queues.clientQueueName("app-8b")).receive(1, 1);
+        assertEquals(1, busy.size());
+        assertEquals(Message.MessageType.DONE_TASK, busy.get(0).getMessage().getType());
+        assertTrue(busy.get(0).getMessage().isError());
+        assertNull(busy.get(0).getMessage().getOutputFileLocation());
+        assertEquals(1, m.getRejectedClients());
+        assertEquals(1, m.getActiveClients(), "the busy reply must not disturb the admitted client");
+        assertTrue(Queues.get(Queues.managerQueueName()).receive(10, 1).isEmpty(), "the request was deleted");
     }
 
     @Test
@@ -249,6 +262,254 @@ public class ManagerTest {
         } finally {
             Queues.setDev(true);
         }
+    }
+
+    /** Worker queue that records every send so tests can check job ordering. */
+    private static class RecordingQueue extends InMemoryQueue {
+        final List<String> events;
+
+        RecordingQueue(List<String> events) {
+            this.events = events;
+        }
+
+        @Override
+        public void send(Message msg) {
+            events.add("send:" + msg.getImageURL());
+            super.send(msg);
+        }
+    }
+
+    /** Records sends and pauses the fan-out after the first batch of ten until released. */
+    private static class BatchPausingQueue extends RecordingQueue {
+        private final CountDownLatch firstBatchSent = new CountDownLatch(1);
+        private final CountDownLatch resume = new CountDownLatch(1);
+        private final String batchPrefix;
+        private int batchSends = 0;
+        private boolean paused = false;
+
+        BatchPausingQueue(List<String> events, String batchPrefix) {
+            super(events);
+            this.batchPrefix = batchPrefix;
+        }
+
+        @Override
+        public void send(Message msg) {
+            super.send(msg);
+            if (msg.getImageURL().startsWith(batchPrefix) && ++batchSends == 10 && !paused) {
+                paused = true;
+                firstBatchSent.countDown();
+                try {
+                    resume.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+
+        void awaitFirstBatch() throws InterruptedException {
+            assertTrue(firstBatchSent.await(10, TimeUnit.SECONDS), "first batch was never sent");
+        }
+
+        void releaseBatch() {
+            resume.countDown();
+        }
+    }
+
+    @Test
+    public void slowReadForOneClientDoesNotStopAnother() throws Exception {
+        final CountDownLatch aReading = new CountDownLatch(1);
+        final CountDownLatch releaseA = new CountDownLatch(1);
+        Manager m = new Manager("mgr-slow", 2, 5) {
+            @Override
+            protected List<String> readUrls(String location) throws IOException {
+                if ("slow-A".equals(location)) {
+                    aReading.countDown();
+                    try {
+                        releaseA.await(10, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                return Arrays.asList("http://a");
+            }
+        };
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask("slow-A", "app-slow-a"));
+        m.routerTick(); // admits A; its fan-out is queued, not run
+
+        // A separate thread acts as the IoWorker and gets stuck in A's slow input read.
+        Thread io = new Thread(new Runnable() {
+            public void run() {
+                m.runOnePendingJob();
+            }
+        });
+        io.start();
+        assertTrue(aReading.await(10, TimeUnit.SECONDS), "A's read should have started");
+
+        // While A is stuck reading its input, B is admitted, OCRed and answered.
+        Queues.get(Queues.managerQueueName())
+                .send(Message.createNewTask(inputFile("http://b"), "app-slow-b"));
+        m.routerTick(); // admits B
+        assertTrue(m.runOnePendingJob(), "B's fan-out should run while A is stuck");
+        Queues.get(Queues.doneOcrQueueName("mgr-slow"))
+                .send(Message.createDoneOCR("http://b", "text-b", "app-slow-b"));
+        m.routerTick(); // handles B's result and queues its finish
+        assertTrue(m.runOnePendingJob(), "B's finish should run while A is stuck");
+        assertEquals(1, Queues.get(Queues.clientQueueName("app-slow-b")).receive(1, 1).size());
+        assertTrue(Queues.get(Queues.clientQueueName("app-slow-a")).receive(1, 1).isEmpty());
+        assertEquals(1, m.getActiveClients(), "A must still be in flight");
+
+        releaseA.countDown();
+        io.join(10000);
+        assertFalse(io.isAlive());
+        assertEquals(2, Queues.get(Queues.workerQueueName()).receive(10, 1).size(),
+                "A's image task is sent once its read completes");
+    }
+
+    @Test
+    public void twoClientsInterleaveAndBothAreAnswered() throws Exception {
+        Manager m = new Manager("mgr-inter", 2, 5);
+        Queues.get(Queues.managerQueueName())
+                .send(Message.createNewTask(inputFile("http://a1", "http://a2"), "app-inter-a"));
+        Queues.get(Queues.managerQueueName())
+                .send(Message.createNewTask(inputFile("http://b1", "http://b2"), "app-inter-b"));
+        m.startOnce(); // both fan-outs run
+        assertEquals(4, Queues.get(Queues.workerQueueName()).receive(10, 1).size());
+
+        Queue doneOcr = Queues.get(Queues.doneOcrQueueName("mgr-inter"));
+        doneOcr.send(Message.createDoneOCR("http://a1", "a1", "app-inter-a"));
+        m.startOnce();
+        doneOcr.send(Message.createDoneOCR("http://b1", "b1", "app-inter-b"));
+        m.startOnce();
+        doneOcr.send(Message.createDoneOCR("http://a2", "a2", "app-inter-a"));
+        doneOcr.send(Message.createDoneOCR("http://b2", "b2", "app-inter-b"));
+        m.startOnce(); // both clients complete
+
+        assertEquals(1, Queues.get(Queues.clientQueueName("app-inter-a")).receive(10, 1).size());
+        assertEquals(1, Queues.get(Queues.clientQueueName("app-inter-b")).receive(10, 1).size());
+        assertEquals(2, m.getServedClients());
+        assertEquals(0, m.getActiveClients());
+    }
+
+    @Test
+    public void duplicateDoneOcrYieldsExactlyOneSummary() throws Exception {
+        String in = inputFile("http://x");
+        Manager m = new Manager("mgr-dup", 1, 5);
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-dup"));
+        m.startOnce();
+        Queue doneOcr = Queues.get(Queues.doneOcrQueueName("mgr-dup"));
+        doneOcr.send(Message.createDoneOCR("http://x", "first", "app-dup"));
+        doneOcr.send(Message.createDoneOCR("http://x", "second", "app-dup")); // duplicate result
+        m.startOnce();
+
+        assertEquals(1, Queues.get(Queues.clientQueueName("app-dup")).receive(10, 1).size(),
+                "the client is answered exactly once");
+        assertEquals(1, m.getServedClients());
+        Scanner scanner = new Scanner(new File(in + ".summary"));
+        String summary = scanner.useDelimiter("\\A").next();
+        scanner.close();
+        assertTrue(summary.contains("first"), "putIfAbsent keeps the first text");
+        assertFalse(summary.contains("second"), "a duplicate DONE_OCR must not overwrite");
+    }
+
+    @Test
+    public void finishRunsBeforeAQueuedFanOut() throws Exception {
+        List<String> events = new ArrayList<String>();
+        Queues.register(Queues.workerQueueName(), new RecordingQueue(events));
+        String inA = inputFile("http://a1");
+        String inB = inputFile("http://b1");
+        Manager m = new Manager("mgr-fo", 2, 5) {
+            @Override
+            protected void writeSummary(ClientTask task, String summaryLocation) throws IOException {
+                events.add("finish:" + task.localAppID);
+                super.writeSummary(task, summaryLocation);
+            }
+        };
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(inA, "app-fo-a"));
+        m.startOnce(); // A admitted and its fan-out runs: one image task sent
+        assertEquals(1, events.size());
+
+        // Queue B's fan-out first, then A's finish behind it in the job queue.
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(inB, "app-fo-b"));
+        m.routerTick(); // admits B; its fan-out stays queued
+        Queues.get(Queues.doneOcrQueueName("mgr-fo"))
+                .send(Message.createDoneOCR("http://a1", "text-a", "app-fo-a"));
+        m.routerTick(); // records A's result; its finish is queued behind B's fan-out
+
+        m.runPendingIo(); // the finish must outrank the queued fan-out
+        assertEquals(1, events.indexOf("finish:app-fo-a"), "finish ran before B's fan-out");
+        assertEquals(2, events.indexOf("send:http://b1"));
+        assertEquals(1, Queues.get(Queues.clientQueueName("app-fo-a")).receive(1, 1).size());
+    }
+
+    @Test
+    public void finishRunsBetweenFanOutBatches() throws Exception {
+        List<String> events = new ArrayList<String>();
+        final BatchPausingQueue workerQueue = new BatchPausingQueue(events, "http://d");
+        Queues.register(Queues.workerQueueName(), workerQueue);
+        Manager m = new Manager("mgr-batch", 2, 5) {
+            @Override
+            protected void writeSummary(ClientTask task, String summaryLocation) throws IOException {
+                events.add("finish:" + task.localAppID);
+                super.writeSummary(task, summaryLocation);
+            }
+        };
+
+        // Client C: one image, its fan-out completes at once.
+        Queues.get(Queues.managerQueueName())
+                .send(Message.createNewTask(inputFile("http://c1"), "app-batch-c"));
+        m.startOnce();
+        assertEquals(1, events.size());
+
+        // Client D: 25 URLs, i.e. three batches of 10/10/5. Its fan-out is queued.
+        String[] manyUrls = new String[25];
+        for (int i = 0; i < manyUrls.length; i++) {
+            manyUrls[i] = String.format("http://d%02d", i);
+        }
+        Queues.get(Queues.managerQueueName())
+                .send(Message.createNewTask(inputFile(manyUrls), "app-batch-d"));
+        m.routerTick(); // admits D; its fan-out stays queued
+
+        // A thread acts as the IoWorker and runs D's fan-out; it pauses after batch one.
+        Thread io = new Thread(new Runnable() {
+            public void run() {
+                m.runOnePendingJob();
+            }
+        });
+        io.start();
+        workerQueue.awaitFirstBatch();
+
+        // The router answers C while D's fan-out is parked between batches.
+        Queues.get(Queues.doneOcrQueueName("mgr-batch"))
+                .send(Message.createDoneOCR("http://c1", "text-c", "app-batch-c"));
+        m.routerTick(); // queues C's finish behind the running fan-out
+        workerQueue.releaseBatch();
+        io.join(10000);
+        assertFalse(io.isAlive());
+
+        // events: 1 send for C, 10 sends of batch one, then C's finish, then batch two and three.
+        assertEquals(11, events.indexOf("finish:app-batch-c"), "finish ran between the batches");
+        assertEquals(27, events.size(), "all 25 image tasks plus C's were sent");
+        assertEquals(1, Queues.get(Queues.clientQueueName("app-batch-c")).receive(1, 1).size());
+    }
+
+    @Test
+    public void summaryPreservesInputUrlOrder() throws Exception {
+        String in = inputFile("zeta", "alpha", "mike");
+        Manager m = new Manager("mgr-order", 1, 5);
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-order"));
+        m.startOnce();
+        Queue doneOcr = Queues.get(Queues.doneOcrQueueName("mgr-order"));
+        // Results arrive in an order unrelated to the input order.
+        doneOcr.send(Message.createDoneOCR("mike", "3", "app-order"));
+        m.startOnce();
+        doneOcr.send(Message.createDoneOCR("alpha", "2", "app-order"));
+        m.startOnce();
+        doneOcr.send(Message.createDoneOCR("zeta", "1", "app-order"));
+        m.startOnce();
+
+        assertEquals(Arrays.asList("zeta\t1", "alpha\t2", "mike\t3"),
+                Files.readAllLines(Paths.get(in + ".summary")),
+                "summary lines follow input URL order, not map order");
     }
 
     @Test
