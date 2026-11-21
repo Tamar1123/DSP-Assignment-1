@@ -26,10 +26,7 @@ public class AWS {
     private final SqsClient sqs;
     private final Ec2Client ec2;
 
-<<<<<<< HEAD
     /** Public Ubuntu 22.04 AMI (us-east-1); boot installs the JRE/AWS CLI if absent. */
-=======
->>>>>>> 7082177 (Handle manager liveness check and resolve S3 bucket without hardcoded account ID)
     public static String ami = "ami-0e72706534bb166e3";
 
     public static Region region1 = Region.US_EAST_1;
