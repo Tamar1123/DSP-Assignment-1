@@ -400,34 +400,42 @@ public class Manager implements Runnable {
         }
     }
 
-    /** Starts the workers needed for the outstanding images, capped per manager by MAX_INSTANCES. */
+    /**
+     * Starts the workers needed for the outstanding images, sized against the whole fleet and
+     * capped by the global instance limit.
+     */
     protected void ensureWorkers(int outstanding) {
         if (Queues.isDev() || outstanding <= 0) {
             return;
         }
         try {
-            int liveWorkers = workerInstanceIds.size();
             int needed = workersNeeded(outstanding, workerFilesN);
-            int toStart = needed - liveWorkers;
+            int liveWorkers = liveWorkerCount();
+            int liveInstances = liveInstanceCount();
+            int toStart = Math.min(needed - liveWorkers, MAX_INSTANCES - liveInstances);
             if (toStart <= 0) {
-                return;
-            }
-            int allowed = MAX_INSTANCES - (liveWorkers + 1); // this manager plus its workers
-            if (toStart > allowed) {
-                toStart = allowed;
-            }
-            if (toStart <= 0) {
-                logDebug("instance cap reached (" + (liveWorkers + 1) + "/" + MAX_INSTANCES
-                        + " for this manager, " + liveWorkers + " workers)");
+                logDebug("no workers to launch: " + needed + " needed, " + liveWorkers
+                        + " live fleet-wide, instance cap at " + liveInstances + "/" + MAX_INSTANCES);
                 return;
             }
             List<String> launched = launchWorkers(toStart);
             logDebug("launched " + launched.size() + " worker(s): " + outstanding + " image(s), "
-                    + workerFilesN + " per worker, " + liveWorkers + " already live");
+                    + workerFilesN + " per worker, " + liveWorkers + " were live fleet-wide, "
+                    + liveInstances + "/" + MAX_INSTANCES + " instances before launch");
         } catch (Exception e) {
             // Worker bootstrap is best effort: the manager must keep serving clients.
             System.err.println("[MANAGER] could not launch workers: " + e.getMessage());
         }
+    }
+
+    /** Live workers fleet-wide, all managers included; protected so tests never reach AWS. */
+    protected int liveWorkerCount() {
+        return AWS.getInstance().runningWorkerCount();
+    }
+
+    /** Live instances fleet-wide (managers plus workers); protected so tests never reach AWS. */
+    protected int liveInstanceCount() {
+        return AWS.getInstance().runningInstanceCount();
     }
 
     /** Launches workers and records their IDs as this manager's workers. */
