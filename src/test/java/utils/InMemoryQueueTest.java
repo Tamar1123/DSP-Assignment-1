@@ -61,37 +61,37 @@ public class InMemoryQueueTest {
     }
 
     @Test
-    public void releaseAtCapacityDoesNotDropTheMessage() throws InterruptedException {
+    public void releaseAtCapacityDoesNotBlockOrDropTheMessage() throws InterruptedException {
         final Queue q = new InMemoryQueue();
         for (int i = 0; i < InMemoryQueue.QUEUE_CAPACITY; i++) {
             q.send(Message.createNewTask("url-" + i, "app-1"));
         }
         final Received released = q.receive(1, 0).get(0);
-        // Refill the freed slot so the queue is genuinely full when release runs.
+        final String releasedUrl = released.getMessage().getInputFileLocation();
+        // Refill the freed slot so the bounded queue is genuinely full when release runs.
         q.send(Message.createNewTask("filler", "app-1"));
 
+        final java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                new java.util.concurrent.atomic.AtomicReference<Throwable>();
         Thread releaser = new Thread(new Runnable() {
             @Override
             public void run() {
-                q.release(released);
+                try {
+                    q.release(released);
+                } catch (Throwable t) {
+                    failure.set(t);
+                }
             }
         });
         releaser.start();
+        releaser.join(2000);
 
-        // A blocking put cannot finish while the queue is full.
-        long deadline = System.currentTimeMillis() + 5000;
-        while (releaser.getState() != Thread.State.WAITING && System.currentTimeMillis() < deadline) {
-            Thread.sleep(10);
-        }
-
-        // Free a slot so the release can complete instead of dropping the message.
-        assertEquals(1, q.receive(1, 0).size());
-        releaser.join(5000);
-        assertFalse(releaser.isAlive(), "release must not block once a slot is free");
+        assertNull(failure.get(), "release must not fail");
+        assertFalse(releaser.isAlive(), "release must not block while the queue is full");
 
         boolean found = false;
         for (Received r : q.receive(InMemoryQueue.QUEUE_CAPACITY, 0)) {
-            if (r.getMessage().getInputFileLocation().equals(released.getMessage().getInputFileLocation())) {
+            if (r.getMessage().getInputFileLocation().equals(releasedUrl)) {
                 found = true;
             }
         }

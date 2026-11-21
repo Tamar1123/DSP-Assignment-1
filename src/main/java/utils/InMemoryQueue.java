@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -15,6 +16,12 @@ public class InMemoryQueue implements Queue {
     static final int QUEUE_CAPACITY = 1000;
 
     private final BlockingQueue<Received> queue = new ArrayBlockingQueue<Received>(QUEUE_CAPACITY);
+    /**
+     * Messages given back with {@link #release(Received)}. Kept outside the bounded queue so a
+     * release can never block the caller (a full manager moves on; a blocked router would stall
+     * every client) and never drops the message. FIFO, like SQS.
+     */
+    private final ConcurrentLinkedQueue<Received> released = new ConcurrentLinkedQueue<Received>();
 
     public InMemoryQueue() {
     }
@@ -33,6 +40,11 @@ public class InMemoryQueue implements Queue {
     public List<Received> receive(int max, int waitSeconds) {
         long deadline = System.currentTimeMillis() + waitSeconds * 1000L;
         List<Received> out = new ArrayList<Received>();
+        // Released messages first: they are older than whatever arrived after them.
+        Received requeued;
+        while (out.size() < max && (requeued = released.poll()) != null) {
+            out.add(requeued);
+        }
         while (out.size() < max) {
             long remaining = deadline - System.currentTimeMillis();
             Received r;
@@ -58,14 +70,9 @@ public class InMemoryQueue implements Queue {
 
     @Override
     public void release(Received received) {
-        // Dev loses ordering on release (put appends to the tail); acceptable in-memory.
-        try {
-            // Block rather than offer: at capacity an offer would silently drop the message.
-            queue.put(received);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException("Interrupted while releasing to in-memory queue", e);
-        }
+        // Never blocks and never drops: the unbounded released FIFO is independent of the
+        // bounded send path, so a release at capacity cannot stall the receiving thread.
+        released.add(received);
     }
 
     @Override

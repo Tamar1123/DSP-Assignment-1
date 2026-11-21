@@ -279,7 +279,17 @@ public class Manager implements Runnable {
                         }
                     }
                     if (requeue) {
-                        source.release(received, REQUEUE_DELAY_SECONDS);
+                        // A failed release must not fall through to the outer catch: that one
+                        // deletes the request and the client would wait forever. Leave the
+                        // message undeleted instead, so SQS redelivers it after the visibility
+                        // timeout.
+                        try {
+                            source.release(received, REQUEUE_DELAY_SECONDS);
+                        } catch (Exception e) {
+                            System.err.println("[MANAGER] could not requeue client "
+                                    + msg.getLocalAppID() + "; leaving the request for redelivery: "
+                                    + e.getMessage());
+                        }
                     } else {
                         source.delete(received);
                     }

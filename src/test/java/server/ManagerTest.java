@@ -407,6 +407,30 @@ public class ManagerTest {
     }
 
     @Test
+    public void failedRequeueLeavesTheRequestUndeletedAndUnanswered() throws Exception {
+        // A requeue that throws must not reach handle()'s catch, which deletes the message:
+        // deleting it would lose the client request and the client would wait forever.
+        String in = inputFile("http://a");
+        ReleaseFailingQueue managerQueue = new ReleaseFailingQueue();
+        Queues.register(Queues.managerQueueName(), managerQueue);
+        Manager m = new Manager("mgr-14", 1, 5);
+
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-14a"));
+        m.startOnce(); // admits app-14a and fills the only slot
+        assertFalse(m.hasCapacity());
+        managerQueue.deleted.clear(); // that admission legitimately deleted its request
+
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-14b"));
+        m.startOnce(); // full -> release throws -> no delete
+
+        assertTrue(managerQueue.deleted.isEmpty(), "a failed release must not delete the request");
+        assertTrue(Queues.get(Queues.clientQueueName("app-14b")).receive(1, 0).isEmpty(),
+                "the requeued client must not get a reply");
+        assertEquals(1, m.getRejectedClients());
+        assertEquals(1, m.getActiveClients());
+    }
+
+    @Test
     public void finishFreesTheSlotForTheNextClient() throws Exception {
         String in = inputFile("http://a");
         Manager m = new Manager("mgr-9", 1, 5);
@@ -534,6 +558,27 @@ public class ManagerTest {
             assertEquals(2, Queues.get(Queues.workerQueueName()).receive(10, 1).size());
         } finally {
             Queues.setDev(true);
+        }
+    }
+
+    /** Manager queue whose requeue always fails, recording the deletes it is asked to do. */
+    private static class ReleaseFailingQueue extends InMemoryQueue {
+        final List<Received> deleted = Collections.synchronizedList(new ArrayList<Received>());
+
+        @Override
+        public void delete(Received received) {
+            deleted.add(received);
+            super.delete(received);
+        }
+
+        @Override
+        public void release(Received received) {
+            throw new IllegalStateException("release failed");
+        }
+
+        @Override
+        public void release(Received received, int delaySeconds) {
+            throw new IllegalStateException("release failed");
         }
     }
 
