@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 // Routes client work to workers and answers each client once its images are OCRed.
 // Two threads: the main Router receives and admits, one IoWorker does all blocking calls.
@@ -339,13 +340,18 @@ public class Manager implements Runnable {
             logDebug("ignoring done OCR for unknown client " + msg.getLocalAppID());
             return;
         }
-        // First text wins, but count every result: duplicate URLs are separate tasks, and
-        // an SQS redelivery cannot be told apart from a second identical-URL task.
+        String url = msg.getImageURL();
+        AtomicInteger remaining = url == null ? null : task.awaiting.get(url);
+        if (remaining == null || remaining.getAndDecrement() <= 0) {
+            logDebug("ignoring duplicate DONE_OCR for client " + msg.getLocalAppID() + " url=" + url);
+            return;
+        }
+        // First text wins per URL; duplicate URLs in the input have separate awaiting counts.
         String text = msg.getIdentifiedText() == null ? "" : msg.getIdentifiedText();
         if (msg.isError() && !text.startsWith("ERROR:")) {
             text = "ERROR: " + text;
         }
-        task.texts.putIfAbsent(msg.getImageURL(), text);
+        task.texts.putIfAbsent(url, text);
         int left = task.outstanding.decrementAndGet();
         logDebug("client " + msg.getLocalAppID() + ": " + left + " image(s) outstanding");
         if (left <= 0) {

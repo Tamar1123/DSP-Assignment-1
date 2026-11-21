@@ -15,6 +15,7 @@ import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.List;
 import java.util.UUID;
 
 // A worker: takes one image task at a time from the shared worker queue, OCRs the image and
@@ -24,13 +25,24 @@ import java.util.UUID;
 public class Worker implements Runnable {
     private static final int RECEIVE_MAX = 1;
     private static final int RECEIVE_WAIT_SECONDS = 1;
+    // A worker with no task for this long shuts down, so a worker whose manager is gone (or
+    // whose work is finished) does not run on. Long enough to cover boot and the manager's
+    // fan-out of the input file; a manager that still needs workers relaunches them.
+    static final long IDLE_SHUTDOWN_MILLIS = 5 * 60 * 1000L;
 
     private final Queue workerQueue;
+    private final long idleShutdownMillis;
 
     private volatile boolean running = true;
+    private volatile long lastTaskMillis = System.currentTimeMillis();
 
     public Worker() {
-        this.workerQueue = Queues.get(Queues.workerQueueName());
+        this(Queues.get(Queues.workerQueueName()), IDLE_SHUTDOWN_MILLIS);
+    }
+
+    Worker(Queue workerQueue, long idleShutdownMillis) {
+        this.workerQueue = workerQueue;
+        this.idleShutdownMillis = idleShutdownMillis;
     }
 
     public static void main(String[] args) {
@@ -70,7 +82,16 @@ public class Worker implements Runnable {
     // Processes one receive batch from the worker queue. This is the test seam: run() calls it
     // in a loop until shutdown().
     public void startOnce() {
-        for (Received received : workerQueue.receive(RECEIVE_MAX, RECEIVE_WAIT_SECONDS)) {
+        List<Received> batch = workerQueue.receive(RECEIVE_MAX, RECEIVE_WAIT_SECONDS);
+        if (batch.isEmpty()) {
+            if (System.currentTimeMillis() - lastTaskMillis >= idleShutdownMillis) {
+                System.out.println("[WORKER] no task for " + idleShutdownMillis + " ms; shutting down");
+                shutdown();
+            }
+            return;
+        }
+        lastTaskMillis = System.currentTimeMillis();
+        for (Received received : batch) {
             handle(received);
         }
     }

@@ -65,6 +65,21 @@ public class AppTest {
     }
 
     @Test
+    public void managerScriptTerminatesItsOwnInstanceWhenTheJvmExits() {
+        String script = App.managerBootstrapScript("test-bucket", 3, 7, false);
+
+        assertTrue(script.contains("-jar /home/ec2-user/Manager.jar 3 7 \"$INSTANCE_ID\""),
+                "the manager must get its client and file limits and its own instance id");
+        assertTrue(script.contains("STATUS=$?"), "the manager exit status must be captured");
+        assertTrue(script.contains("aws ec2 terminate-instances --region us-east-1 --instance-ids \"$INSTANCE_ID\" || true"),
+                "the manager must terminate its own instance after the JVM exits");
+        assertTrue(script.indexOf("terminate-instances") > script.indexOf("STATUS=$?"),
+                "termination must come after the JVM exit, not before it");
+        assertTrue(script.trim().endsWith("exit $STATUS"), "the manager exit status must be returned");
+        assertFalse(script.contains(" -D"), "no debug flag without debug");
+    }
+
+    @Test
     void generateHtmlFromSummary_formatsImagesAndErrors() throws Exception {
         Path summaryFile = Files.createTempFile("summary-test-", ".txt");
         Path htmlFile = Files.createTempFile("output-test-", ".html");

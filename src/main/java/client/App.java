@@ -253,8 +253,14 @@ static String createEC2(int freeSlots) {
     S3Client s3 = aws.getS3();
     uploadJarToS3(s3, aws.bucketName, MANAGER_JAR_LOCAL_PATH, MANAGER_JAR_S3_KEY);
     uploadJarToS3(s3, aws.bucketName, WORKER_JAR_LOCAL_PATH, WORKER_JAR_S3_KEY);
+    String ec2Script = managerBootstrapScript(aws.bucketName, managerClientsN, workerFilesN, debug);
+    return aws.createEC2(ec2Script, "manager", 1, freeSlots);
+}
 
-    String ec2Script = "#!/bin/bash\n" +
+// User-data for the manager instance. When the manager JVM exits, normally or by failure, the
+// instance terminates itself, so a finished manager never keeps running (and billing).
+static String managerBootstrapScript(String bucketName, int clientsN, int filesN, boolean debug) {
+    return "#!/bin/bash\n" +
             "set -e\n" +
             "exec > >(tee -a /var/log/dsp-bootstrap.log) 2>&1\n" +
             "mkdir -p /home/ec2-user\n" +
@@ -264,13 +270,17 @@ static String createEC2(int freeSlots) {
             "fi\n" +
             "TOKEN=$(curl -X PUT \"http://169.254.169.254/latest/api/token\" -H \"X-aws-ec2-metadata-token-ttl-seconds: 21600\" -s)\n" +
             "INSTANCE_ID=$(curl -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/instance-id -s)\n" +
-            "aws s3 cp s3://" + aws.bucketName + "/" + MANAGER_JAR_S3_KEY + " /home/ec2-user/Manager.jar\n" +
+            "aws s3 cp s3://" + bucketName + "/" + MANAGER_JAR_S3_KEY + " /home/ec2-user/Manager.jar\n" +
             "JAVA_BIN=$(command -v java)\n" +
             "echo \"[BOOTSTRAP] Using JAVA_BIN=$JAVA_BIN\" > /dev/console\n" +
             "\"$JAVA_BIN\" -version > /dev/console 2>&1\n" +
-            (debug ? "touch /home/ec2-user/manager.log\n(while true; do aws s3 cp /home/ec2-user/manager.log s3://" + aws.bucketName + "/" + AWS.S3_PREFIX + "logs/manager-$INSTANCE_ID.log --quiet; sleep 5; done) &\n" : "") +
-            "\"$JAVA_BIN\" -jar /home/ec2-user/Manager.jar " + managerClientsN + " " + workerFilesN + " \"$INSTANCE_ID\"" + (debug ? " -D" : "") + " > /home/ec2-user/manager.log 2>&1 || { cat /home/ec2-user/manager.log > /dev/console; exit 1; }\n";
-    return aws.createEC2(ec2Script, "manager", 1, freeSlots);
+            (debug ? "touch /home/ec2-user/manager.log\n(while true; do aws s3 cp /home/ec2-user/manager.log s3://" + bucketName + "/" + AWS.S3_PREFIX + "logs/manager-$INSTANCE_ID.log --quiet; sleep 5; done) &\n" : "") +
+            "set +e\n" +
+            "\"$JAVA_BIN\" -jar /home/ec2-user/Manager.jar " + clientsN + " " + filesN + " \"$INSTANCE_ID\"" + (debug ? " -D" : "") + " > /home/ec2-user/manager.log 2>&1\n" +
+            "STATUS=$?\n" +
+            "[ $STATUS -eq 0 ] || cat /home/ec2-user/manager.log > /dev/console\n" +
+            "aws ec2 terminate-instances --region " + AWS.region2.id() + " --instance-ids \"$INSTANCE_ID\" || true\n" +
+            "exit $STATUS\n";
 }
 
     private static void uploadJarToS3(S3Client s3, String bucketName, String localPath, String s3Key) {

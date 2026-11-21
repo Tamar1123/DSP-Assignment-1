@@ -29,6 +29,25 @@ public class WorkerTest {
     }
 
 
+    @Test
+    public void idleWorkerShutsDownAfterTheIdleLimit() {
+        Worker w = new Worker(Queues.get(Queues.workerQueueName()), 0L);
+        w.startOnce();
+        assertFalse(w.isRunning(), "a worker with no task past the idle limit must stop");
+    }
+
+    @Test
+    public void workerStaysUpWhileTasksKeepComing() {
+        Worker w = new Worker(Queues.get(Queues.workerQueueName()), Long.MAX_VALUE / 2) {
+            @Override
+            public String identify(String imageURL) {
+                return "text";
+            }
+        };
+        w.startOnce();
+        assertTrue(w.isRunning(), "an empty poll inside the idle limit must not stop the worker");
+    }
+
     @org.junit.jupiter.api.Disabled("requires network; run manually")
     @Test
     public void realImageOcrSmokeTest() throws Exception {
