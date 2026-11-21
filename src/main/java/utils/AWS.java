@@ -20,7 +20,6 @@ import java.util.HashMap;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.function.LongSupplier;
 
 public class AWS {
     private final S3Client s3;
@@ -297,9 +296,9 @@ public String bucketName;
     }
 
     /**
-     * Stops the running/pending workers launched by {@code managerID}, then waits up to
-     * {@link WorkerTermination#WORKER_STOP_TIMEOUT} for them to settle. Best effort: any
-     * AWS error or timeout is logged and swallowed so a terminating manager is not blocked.
+     * Stops the running/pending workers launched by {@code managerID}, then waits until they
+     * settle. There is no timeout: per the assignment the manager waits for its workers to
+     * finish. Any AWS error is logged and swallowed so a terminating manager is not blocked.
      */
     public void terminateWorkersOf(String managerID) {
         if (managerID == null || managerID.trim().isEmpty()) {
@@ -309,14 +308,7 @@ public String bucketName;
             WorkerTermination.StopResult result = WorkerTermination.stopWorkers(
                     managerID,
                     ec2Ops(),
-                    WorkerTermination.WORKER_STOP_TIMEOUT,
                     WorkerTermination.POLL_INTERVAL_MILLIS,
-                    new LongSupplier() {
-                        @Override
-                        public long getAsLong() {
-                            return System.currentTimeMillis();
-                        }
-                    },
                     new WorkerTermination.Sleeper() {
                         @Override
                         public void sleep(long millis) {
@@ -329,11 +321,7 @@ public String bucketName;
                             }
                         }
                     });
-            if (result.timedOut) {
-                System.err.println("[AWS] workers of manager " + managerID
-                        + " still stopping after " + WorkerTermination.WORKER_STOP_TIMEOUT
-                        + " ms: " + result.survivors);
-            } else if (client.App.debug) {
+            if (client.App.debug) {
                 System.out.printf("[DEBUG] stopped %d worker(s) of manager %s%n",
                         result.targeted.size(), managerID);
             }
@@ -398,7 +386,7 @@ public String bucketName;
     /**
      * Current state per instance ID; an ID EC2 no longer reports is simply absent, which
      * {@link WorkerTermination#unsettled} reads as "not yet confirmed stopped" during the
-     * bounded wait (the wait stays bounded by the timeout either way).
+     * wait.
      * A filter (not {@code instanceIds}) keeps an unknown ID from failing the whole probe.
      */
     private Map<String, String> instanceStates(List<String> instanceIds) {

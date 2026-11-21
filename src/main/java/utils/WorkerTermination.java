@@ -6,14 +6,13 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.LongSupplier;
 
 /**
  * Pure decision and polling logic for stopping the workers one manager launched.
  *
  * <p>The EC2 calls live behind {@link Ec2Ops}, which {@link AWS} implements with its
- * client. This class uses no AWS SDK types, so the selection predicate and the bounded
- * wait can be tested offline with a fake EC2 and a fake clock.</p>
+ * client. This class uses no AWS SDK types, so the selection predicate and the wait
+ * can be tested offline with a fake EC2 and a fake sleeper.</p>
  */
 public final class WorkerTermination {
 
@@ -24,8 +23,6 @@ public final class WorkerTermination {
     /** EC2 tag key usually carrying the instance role name. */
     public static final String NAME_TAG = "Name";
 
-    /** Default bound (milliseconds) for waiting until stopped workers settle. */
-    public static final long WORKER_STOP_TIMEOUT = 120_000L;
     /** Default delay (milliseconds) between state probes while workers settle. */
     public static final long POLL_INTERVAL_MILLIS = 2_000L;
 
@@ -60,8 +57,7 @@ public final class WorkerTermination {
 
         /**
          * Current state per instance ID. An ID missing from the map (or mapped to null)
-         * means its state is not yet confirmed stopped, so the bounded wait keeps polling;
-         * the overall wait stays bounded by the timeout either way.
+         * means its state is not yet confirmed stopped, so the wait keeps polling.
          */
         Map<String, String> states(List<String> instanceIds);
     }
@@ -75,15 +71,9 @@ public final class WorkerTermination {
     public static final class StopResult {
         /** Worker IDs selected for termination (empty when nothing matched). */
         public final List<String> targeted;
-        /** IDs still not terminated/shutting-down when the call returned. */
-        public final List<String> survivors;
-        /** True when the bound elapsed before every targeted instance settled. */
-        public final boolean timedOut;
 
-        StopResult(List<String> targeted, List<String> survivors, boolean timedOut) {
+        StopResult(List<String> targeted) {
             this.targeted = Collections.unmodifiableList(new ArrayList<String>(targeted));
-            this.survivors = Collections.unmodifiableList(new ArrayList<String>(survivors));
-            this.timedOut = timedOut;
         }
 
         public boolean foundAny() {
@@ -93,11 +83,12 @@ public final class WorkerTermination {
 
     /**
      * Terminates the running/pending workers tagged {@code Name=worker} and
-     * {@code managerID=managerID}, then polls until they are terminated or shutting down,
-     * bounded by the timeout. Never sleeps for real beyond the injected sleeper.
+     * {@code managerID=managerID}, then polls until they are terminated or shutting down.
+     * There is no timeout: per the assignment the manager waits for its workers to finish.
+     * Never sleeps for real beyond the injected sleeper.
      */
-    public static StopResult stopWorkers(String managerID, Ec2Ops ec2, long timeoutMillis,
-                                         long pollMillis, LongSupplier clock, Sleeper sleeper) {
+    public static StopResult stopWorkers(String managerID, Ec2Ops ec2, long pollMillis,
+                                         Sleeper sleeper) {
         if (ec2 == null || isBlank(managerID)) {
             return emptyResult();
         }
@@ -109,32 +100,16 @@ public final class WorkerTermination {
         ec2.terminate(ids);
 
         long interval = pollMillis > 0L ? pollMillis : POLL_INTERVAL_MILLIS;
-        long deadline = clock.getAsLong() + Math.max(0L, timeoutMillis);
-        // The very first probe runs unconditionally, right after terminate: the workers may
-        // have settled instantly, and the first check must happen even when the clock already
-        // sits at the deadline (a zero timeout).
-        List<String> unsettled = Collections.emptyList();
-        boolean firstProbe = true;
         while (true) {
-            // Every probe after the first is guarded by this deadline check, so no extra
-            // probe-and-sleep cycle runs once the deadline has passed.
-            if (!firstProbe && clock.getAsLong() >= deadline) {
-                return new StopResult(ids, unsettled, true);
+            if (unsettled(ids, ec2.states(ids)).isEmpty()) {
+                return new StopResult(ids);
             }
-            unsettled = unsettled(ids, ec2.states(ids));
-            firstProbe = false;
-            if (unsettled.isEmpty()) {
-                return new StopResult(ids, Collections.<String>emptyList(), false);
-            }
-            long remaining = deadline - clock.getAsLong();
-            if (remaining > 0L) {
-                sleeper.sleep(Math.min(interval, remaining));
-            }
+            sleeper.sleep(interval);
         }
     }
 
     private static StopResult emptyResult() {
-        return new StopResult(Collections.<String>emptyList(), Collections.<String>emptyList(), false);
+        return new StopResult(Collections.<String>emptyList());
     }
 
     /** IDs of instances that are live workers launched by {@code managerID}. */
@@ -175,8 +150,7 @@ public final class WorkerTermination {
      * IDs from {@code ids} that are not confirmed settled. Only {@code terminated} and
      * {@code shutting-down} count as settled; a missing or null state is unsettled, since a
      * transient or incomplete {@code DescribeInstances} response must not be read as
-     * "already gone". During the bounded wait this keeps the caller polling; the overall
-     * call stays bounded by the timeout either way.
+     * "already gone". During the wait this keeps the caller polling.
      */
     public static List<String> unsettled(List<String> ids, Map<String, String> states) {
         if (ids == null || ids.isEmpty()) {
