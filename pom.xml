@@ -21,9 +21,9 @@
         <dependencies>
             <!-- Third-party managed dependencies -->
             <dependency>
-                <groupId>com.asprise.ocr</groupId>
-                <artifactId>java-ocr-api</artifactId>
-                <version>15.3.0.3</version>
+                <groupId>net.sourceforge.tess4j</groupId>
+                <artifactId>tess4j</artifactId>
+                <version>5.11.0</version>
             </dependency>
 
             <!-- BOMs -->
@@ -101,8 +101,8 @@
 
         <!-- OCR (version managed above) -->
         <dependency>
-            <groupId>com.asprise.ocr</groupId>
-            <artifactId>java-ocr-api</artifactId>
+            <groupId>net.sourceforge.tess4j</groupId>
+            <artifactId>tess4j</artifactId>
         </dependency>
 
         <!-- Testing -->

@@ -1,6 +1,7 @@
 package server;
 
-import com.asprise.ocr.Ocr;
+import net.sourceforge.tess4j.Tesseract;
+import net.sourceforge.tess4j.TesseractException;
 import utils.Message;
 import utils.Queue;
 import utils.Queues;
@@ -198,18 +199,27 @@ public class Worker implements Runnable {
     }
 
     public static String processOne(String inputFileName) {
-        Ocr.setUp(); // one time setup
-        Ocr ocr = new Ocr(); // create a new OCR engine
-        ocr.startEngine("eng", Ocr.SPEED_FASTEST); // English
+        Tesseract tesseract = new Tesseract();
+        tesseract.setLanguage("eng");
+        String tessDataEnv = System.getenv("TESSDATA_PREFIX");
+        if (tessDataEnv != null && !tessDataEnv.trim().isEmpty()) {
+            tesseract.setDatapath(tessDataEnv.trim());
+        } else {
+            File defaultTessdata = new File("/usr/share/tesseract-ocr/4.00/tessdata");
+            if (defaultTessdata.isDirectory()) {
+                tesseract.setDatapath(defaultTessdata.getAbsolutePath());
+            } else {
+                File altTessdata = new File("/usr/share/tesseract-ocr/5/tessdata");
+                if (altTessdata.isDirectory()) {
+                    tesseract.setDatapath(altTessdata.getAbsolutePath());
+                }
+            }
+        }
         try {
-            String result = ocr.recognize(
-                    new File[]{new File(inputFileName)},
-                    Ocr.RECOGNIZE_TYPE_TEXT,
-                    Ocr.OUTPUT_FORMAT_PLAINTEXT
-            );
+            String result = tesseract.doOCR(new File(inputFileName));
             return result == null ? "" : result.trim();
-        } finally {
-            ocr.stopEngine();
+        } catch (TesseractException e) {
+            throw new RuntimeException("Tess4J OCR failed: " + e.getMessage(), e);
         }
     }
 

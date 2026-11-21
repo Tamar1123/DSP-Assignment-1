@@ -157,7 +157,7 @@ public class Manager implements Runnable {
         }
         System.out.println("[MANAGER] Starting Manager node in AWS SQS mode (managerClientsN="
                 + managerClientsN + ", workerFilesN=" + workerFilesN + ")...");
-        String instanceId = args.length > 2 ? args[2] : UUID.randomUUID().toString();
+        String instanceId = (args.length > 2 && !args[2].trim().isEmpty()) ? args[2].trim() : UUID.randomUUID().toString();
         Manager manager = new Manager(instanceId, managerClientsN, workerFilesN);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("[MANAGER] Shutting down...");
@@ -292,7 +292,11 @@ public class Manager implements Runnable {
         }
         // First text wins, but count every result: duplicate URLs are separate tasks, and
         // an SQS redelivery cannot be told apart from a second identical-URL task.
-        task.texts.putIfAbsent(msg.getImageURL(), msg.getIdentifiedText());
+        String text = msg.getIdentifiedText() == null ? "" : msg.getIdentifiedText();
+        if (msg.isError() && !text.startsWith("ERROR:")) {
+            text = "ERROR: " + text;
+        }
+        task.texts.putIfAbsent(msg.getImageURL(), text);
         if (task.outstanding.decrementAndGet() <= 0) {
             ioWorker.submit(new FinishJob(task));
         }

@@ -26,7 +26,7 @@ public class AWS {
     private final SqsClient sqs;
     private final Ec2Client ec2;
 
-    public static String ami = "ami-00e95a9222311e8ed";
+    public static String ami = "ami-0046c29ee3573ac7f";
 
     public static Region region1 = Region.US_EAST_1;
     public static Region region2 = Region.US_EAST_1;
