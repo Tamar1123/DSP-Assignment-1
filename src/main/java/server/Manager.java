@@ -62,6 +62,7 @@ public class Manager implements Runnable {
 
     // Runs every blocking job, finishes before fan-outs, on one thread.
     private final IoWorker ioWorker;
+    private final ObjectStore objectStore = new ObjectStore();
 
     private volatile boolean running = true;
     // Set by the first TERMINATE: stop admitting, drain until clientTasks is empty.
@@ -513,63 +514,11 @@ public class Manager implements Runnable {
     }
 
     protected void writeSummary(ClientTask task, String summaryLocation) throws IOException {
-        // In dev mode summaryLocation is a local path; on AWS it is an S3 key, so go via a temp file.
-        File file = Queues.isDev() ? new File(summaryLocation) : File.createTempFile("manager-summary-", ".txt");
-        PrintWriter out = new PrintWriter(file);
-        try {
-            // Input URL order (task.urls), never the map's order.
-            for (String url : task.urls) {
-                String text = task.texts.get(url);
-                text = (text == null ? "" : text).replace('\n', ' ').replace('\r', ' ');
-                out.println(url + "\t" + text);
-            }
-        } finally {
-            out.close();
-        }
-        if (!Queues.isDev()) {
-            String s3Key = summaryLocation;
-            AWS.getInstance().getS3().putObject(
-                    software.amazon.awssdk.services.s3.model.PutObjectRequest.builder()
-                            .bucket(AWS.getInstance().bucketName)
-                            .key(s3Key)
-                            .build(),
-                    software.amazon.awssdk.core.sync.RequestBody.fromFile(file));
-            file.delete();
-        }
+        objectStore.writeSummary(task.urls, task.texts, summaryLocation);
     }
 
     protected List<String> readUrls(String inputFileLocation) throws IOException {
-        if (!Queues.isDev()) {
-            // Download from S3 to a temp file, then parse.
-            File tempFile = File.createTempFile("manager-input-", ".txt");
-            tempFile.deleteOnExit();
-            tempFile.delete(); // the SDK refuses to overwrite an existing file
-            AWS.getInstance().getS3().getObject(
-                    software.amazon.awssdk.services.s3.model.GetObjectRequest.builder()
-                            .bucket(AWS.getInstance().bucketName)
-                            .key(inputFileLocation)
-                            .build(),
-                    software.amazon.awssdk.core.sync.ResponseTransformer.toFile(tempFile));
-            return readUrlsFromFile(tempFile);
-        }
-        return readUrlsFromFile(new File(inputFileLocation));
-    }
-
-    private List<String> readUrlsFromFile(File file) throws IOException {
-        List<String> urls = new ArrayList<String>();
-        BufferedReader reader = new BufferedReader(new FileReader(file));
-        try {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String url = line.trim();
-                if (!url.isEmpty()) {
-                    urls.add(url);
-                }
-            }
-        } finally {
-            reader.close();
-        }
-        return urls;
+        return objectStore.readUrls(inputFileLocation);
     }
 
     // Terminates only the workers this manager launched; never calls AWS in dev mode.
