@@ -289,14 +289,6 @@ public String bucketName;
         }
     }
 
-    // Number of live workers: running, pending, or shutting-down. "Live" is stricter than
-    // "running" so a worker that is still booting counts against the cap too, and a
-    // shutting-down worker still occupies the fleet until EC2 removes it, so counting it as
-    // live avoids launching a replacement while it terminates.
-    public int runningWorkerCount() {
-        return countInstances("worker", "running", "pending", "shutting-down");
-    }
-
     // Number of live manager and worker instances, the manager included. Managers count as
     // running + pending only; workers additionally count while shutting-down.
     public int runningInstanceCount() {

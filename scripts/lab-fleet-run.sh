@@ -19,8 +19,8 @@
 # has to start its own manager.  Managers publish their own real "free" tag when they admit
 # or finish a client; the script does not fake it afterwards.  Later clients see a free
 # manager and reuse it.  Workers are shared through one queue and every manager sizes its
-# worker request from the whole fleet's task count, so the fleet-wide worker total is
-# ceil(task lines / worker-files-n), capped at <workers>.  The input is cycled when it is
+# own workers from its own clients' task count, so the fleet-wide worker total is the sum of
+# ceil(manager task lines / worker-files-n), capped at <workers>.  The input is cycled when it is
 # too short to give <managers> x <workers> task lines.
 #
 # The cap is enforced twice: by the arithmetic above (managers + expected workers), and by

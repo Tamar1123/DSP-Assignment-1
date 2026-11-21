@@ -76,13 +76,17 @@ class WorkerOrchestrator {
 
     // Starts this manager's share of the workers for its outstanding images, capped by the
     // global instance limit.
-    void ensure(int outstanding) {
+    synchronized void ensure(int outstanding) {
         if (Queues.isDev() || outstanding <= 0) {
             return;
         }
         try {
             int needed = workersNeeded(outstanding, workerFilesN);
             int ownWorkers = workerInstanceIds.size();
+            if (needed - ownWorkers <= 0) {
+                port.log("no workers to launch: " + needed + " needed, " + ownWorkers + " owned");
+                return;
+            }
             int liveInstances = port.liveInstanceCount();
             int toStart = workersToLaunch(outstanding, workerFilesN, ownWorkers, liveInstances);
             if (toStart <= 0) {
@@ -168,7 +172,7 @@ class WorkerOrchestrator {
     }
 
     // Drops workers that are gone or stopped and launches replacements for outstanding work.
-    void reconcile() {
+    synchronized void reconcile() {
         if (port.isTerminating() || Queues.isDev()) {
             return;
         }

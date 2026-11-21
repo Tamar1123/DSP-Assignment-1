@@ -46,7 +46,7 @@ class WorkerOrchestratorTest {
         }
     }
 
-    private static final class FakePort implements WorkerOrchestrator.Port {
+    private static class FakePort implements WorkerOrchestrator.Port {
         private final FakeFleet fleet;
         private final String prefix;
         private final List<Integer> launchCounts = new ArrayList<Integer>();
@@ -145,6 +145,41 @@ class WorkerOrchestratorTest {
         ensureInAwsMode(orchestrator);
 
         assertTrue(port.launchCounts.isEmpty(), "a fleet at MAX_INSTANCES must not launch");
+    }
+
+    @Test
+    public void concurrentEnsureCallsLaunchOnlyOnce() throws Exception {
+        final FakeFleet fleet = new FakeFleet(1);
+        FakePort port = new FakePort(fleet, "a") {
+            public List<String> launchWorkerInstances(int count) {
+                try {
+                    Thread.sleep(200); // a slow EC2 call widens the race window
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                synchronized (fleet) {
+                    return super.launchWorkerInstances(count);
+                }
+            }
+        };
+        final WorkerOrchestrator orchestrator = new WorkerOrchestrator(port, 4);
+
+        Queues.setDev(false);
+        try {
+            Runnable call = new Runnable() {
+                public void run() { orchestrator.ensure(12); }
+            };
+            Thread t1 = new Thread(call);
+            Thread t2 = new Thread(call);
+            t1.start();
+            t2.start();
+            t1.join();
+            t2.join();
+        } finally {
+            Queues.setDev(true);
+        }
+
+        assertEquals(3, fleet.workerCount(), "two racing ensure calls must not double-provision");
     }
 
     @Test
