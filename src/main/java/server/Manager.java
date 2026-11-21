@@ -45,24 +45,20 @@ public class Manager implements Runnable {
     private final Queue doneOcrQueue;
 
     // manager-clients-n: clients this manager serves at once.
-    private final int maxClients;
     // worker-files-n: target input files per worker.
     private final int workerFilesN;
 
     // Worker instance IDs this manager launched; the source of truth for its workers.
     private final WorkerOrchestrator workers;
 
-    // Admitted clients keyed by localAppID; its size is the load.
-    private final Map<String, ClientTask> clientTasks = new ConcurrentHashMap<String, ClientTask>();
-    private final AtomicInteger servedClients = new AtomicInteger(); // finished clients
-    private final AtomicInteger rejectedClients = new AtomicInteger(); // full-manager requeues
+    private final ClientRegistry clients;
 
     // Runs every blocking job, finishes before fan-outs, on one thread.
     private final IoWorker ioWorker;
     private final ClientFileStore clientFiles = new ClientFileStore();
 
     private volatile boolean running = true;
-    // Set by the first TERMINATE: stop admitting, drain until clientTasks is empty.
+    // Set by the first TERMINATE: stop admitting, drain until the registry is empty.
     private final AtomicBoolean terminating = new AtomicBoolean();
     // Last time reconcileWorkersIfDue actually reconciled.
     private volatile long lastReconcileMillis = System.currentTimeMillis();
@@ -84,7 +80,7 @@ public class Manager implements Runnable {
         }
         this.managerID = managerID;
         this.ioWorker = new IoWorker("manager-io-worker-" + managerID);
-        this.maxClients = maxClients;
+        this.clients = new ClientRegistry(maxClients);
         this.workerFilesN = tasksPerWorker;
         this.managerQueue = Queues.get(Queues.managerQueueName());
         this.workerQueue = Queues.get(Queues.workerQueueName());
@@ -138,19 +134,19 @@ public class Manager implements Runnable {
 
     // True while this manager has a free client slot.
     public boolean hasCapacity() {
-        return clientTasks.size() < maxClients;
+        return clients.hasCapacity();
     }
 
     public int getActiveClients() {
-        return clientTasks.size();
+        return clients.size();
     }
 
     public int getServedClients() {
-        return servedClients.get();
+        return clients.served();
     }
 
     public int getRejectedClients() {
-        return rejectedClients.get();
+        return clients.rejected();
     }
 
     // One router tick: drains done-OCR without waiting, then polls requests. A full manager
@@ -342,24 +338,24 @@ public class Manager implements Runnable {
     private boolean handleNewTask(Message msg) {
         String localAppID = msg.getLocalAppID();
         if (terminating.get()) {
-            rejectedClients.incrementAndGet();
+            clients.markRejected();
             logDebug("terminating: rejecting client " + localAppID);
             Message rejected = Message.createDoneTask(null, localAppID);
             rejected.setError(true);
             Queues.get(Queues.clientQueueName(localAppID)).send(rejected);
             return false;
         }
-        if (clientTasks.containsKey(localAppID)) {
+        if (clients.contains(localAppID)) {
             logDebug("ignoring duplicate new task for client " + localAppID);
             return false;
         }
         if (!hasCapacity()) {
-            rejectedClients.incrementAndGet();
-            logDebug("full: requeueing client " + localAppID + " (" + clientTasks.size() + "/" + maxClients + ")");
+            clients.markRejected();
+            logDebug("full: requeueing client " + localAppID + " (" + clients.size() + "/" + clients.maxClients() + ")");
             return true;
         }
         ClientTask task = new ClientTask(localAppID, msg.getInputFileLocation());
-        clientTasks.put(localAppID, task);
+        clients.add(task);
         ioWorker.submit(new SplitInputJob(task));
         logDebug("admitted client " + localAppID);
         return false;
@@ -367,7 +363,7 @@ public class Manager implements Runnable {
 
     // Records a result and queues finish when the last one arrives.
     private void handleDoneOcr(Message msg) {
-        ClientTask task = clientTasks.get(msg.getLocalAppID());
+        ClientTask task = clients.get(msg.getLocalAppID());
         if (task == null) {
             logDebug("ignoring done OCR for unknown client " + msg.getLocalAppID());
             return;
@@ -393,13 +389,13 @@ public class Manager implements Runnable {
             return;
         }
         terminateRequester = msg.getLocalAppID();
-        logDebug("terminating: draining " + clientTasks.size() + " client(s)");
+        logDebug("terminating: draining " + clients.size() + " client(s)");
     }
 
     // Completes termination once every admitted client has its answer: stop this manager's own
     // workers, drop the done-OCR queue, ack the requester (even if it already finished), stop.
     private void finishTerminationIfDrained() {
-        if (!running || !terminating.get() || !clientTasks.isEmpty()) {
+        if (!running || !terminating.get() || !clients.isEmpty()) {
             return;
         }
         running = false;
@@ -447,13 +443,7 @@ public class Manager implements Runnable {
 
 
     private int totalOutstanding() {
-        int total = 0;
-        for (ClientTask task : clientTasks.values()) {
-            if (task.outstanding.get() > 0) {
-                total += task.outstanding.get();
-            }
-        }
-        return total;
+        return clients.totalOutstanding();
     }
 
     // Fails a task once: error reply, remove it, free the slot. IoWorker only.
@@ -470,13 +460,13 @@ public class Manager implements Runnable {
             System.err.println("[MANAGER] could not notify client " + task.localAppID
                     + " of failure: " + e.getMessage());
         }
-        clientTasks.remove(task.localAppID, task);
+        clients.remove(task);
         updateFreeSlots();
     }
 
     // Publishes free slots as the EC2 free tag; a hint that may lag. IoWorker only.
     private void updateFreeSlots() {
-        publishFreeSlots(maxClients - clientTasks.size());
+        publishFreeSlots(clients.freeSlots());
     }
 
     // Protected seam for the free-slot tag write; no-op in dev so tests never reach AWS.
@@ -620,9 +610,9 @@ public class Manager implements Runnable {
                         + Queues.clientQueueName(task.localAppID));
                 Queues.get(Queues.clientQueueName(task.localAppID))
                         .send(Message.createDoneTask(summaryLocation, task.localAppID));
-                servedClients.incrementAndGet();
-                logDebug("finished client " + task.localAppID + " (served " + servedClients.get()
-                        + ", free slots " + (maxClients - clientTasks.size()) + ")");
+                clients.markServed();
+                logDebug("finished client " + task.localAppID + " (served " + clients.served()
+                        + ", free slots " + (clients.freeSlots()) + ")");
             } catch (Exception e) {
                 // The summary could not be written or sent: tell the client so it does not hang.
                 System.err.println("[MANAGER] could not finish client " + task.localAppID
@@ -638,28 +628,11 @@ public class Manager implements Runnable {
                 }
             } finally {
                 // Free the slot last, and always: a failed summary must not leak a client slot.
-                clientTasks.remove(task.localAppID, task);
+                clients.remove(task);
                 updateFreeSlots();
             }
         }
     }
 
     // Per-client work while its images are OCRed.
-    static final class ClientTask {
-        final String localAppID;
-        final String inputFileLocation;
-        // First text per URL wins.
-        final ConcurrentHashMap<String, String> texts = new ConcurrentHashMap<String, String>();
-        // Image tasks not yet answered.
-        final AtomicInteger outstanding = new AtomicInteger();
-        // Answers the client exactly once.
-        final AtomicBoolean done = new AtomicBoolean(false);
-        // Input order, set before the first image task is sent.
-        volatile List<String> urls = Collections.emptyList();
-
-        ClientTask(String localAppID, String inputFileLocation) {
-            this.localAppID = localAppID;
-            this.inputFileLocation = inputFileLocation;
-        }
-    }
 }
