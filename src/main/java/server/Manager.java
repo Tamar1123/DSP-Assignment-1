@@ -33,6 +33,8 @@ public class Manager implements Runnable {
     private static final int RECEIVE_WAIT_SECONDS = 1;
     /** NEW_IMAGE_TASK messages are sent in batches of this size. */
     private static final int FAN_OUT_BATCH = 10;
+    /** How often run() reconciles the worker set and launches crash replacements. */
+    private static final long WORKER_RECONCILE_INTERVAL_MILLIS = 10000L;
 
     /** Maximum EC2 instances (manager plus workers) the system may run. */
     static final int MAX_INSTANCES = 9;
@@ -65,6 +67,8 @@ public class Manager implements Runnable {
     private volatile boolean running = true;
     /** Set by the first TERMINATE: stop admitting, keep draining until clientTasks is empty. */
     private final AtomicBoolean terminating = new AtomicBoolean();
+    /** Last time reconcileWorkersIfDue actually reconciled. */
+    private volatile long lastReconcileMillis = System.currentTimeMillis();
     /** The client that asked to terminate; it gets the ack even if already finished. */
     private volatile String terminateRequester;
 
@@ -139,11 +143,12 @@ public class Manager implements Runnable {
         }
     }
 
-    /** Test seam: one router tick, then every pending IoWorker job inline. */
+    /** Test seam: one router tick, every pending IoWorker job inline, then a reconcile. */
     public void startOnce() {
         routerTick();
         runPendingIo();
         finishTerminationIfDrained();
+        reconcileWorkers();
     }
 
     /** Test seam: runs every pending IoWorker job inline, finishes first. */
@@ -228,6 +233,7 @@ public class Manager implements Runnable {
             while (running) {
                 try {
                     routerTick();
+                    reconcileWorkersIfDue();
                     finishTerminationIfDrained();
                 } catch (Exception e) {
                     // Keep the manager alive: one bad batch must not take the whole node down.
@@ -558,6 +564,49 @@ public class Manager implements Runnable {
     /** Current EC2 state per worker ID; protected so reconcile can be tested offline. */
     protected Map<String, String> workerStates(Collection<String> instanceIds) {
         return AWS.getInstance().instanceStates(instanceIds);
+    }
+
+    /**
+     * Drops workers that are gone or stopped and launches replacements for outstanding work.
+     * Runs at most every WORKER_RECONCILE_INTERVAL_MILLIS; never while terminating.
+     */
+    protected void reconcileWorkers() {
+        if (terminating.get() || Queues.isDev()) {
+            return;
+        }
+        try {
+            if (!workerInstanceIds.isEmpty()) {
+                Map<String, String> states = workerStates(workerInstanceIds);
+                for (String id : new ArrayList<String>(workerInstanceIds)) {
+                    String state = states.get(id);
+                    if (state == null || isDeadWorkerState(state)) {
+                        workerInstanceIds.remove(id);
+                        logDebug("removed dead worker " + id + " (state " + state + ")");
+                    }
+                }
+            }
+            ensureWorkers(totalOutstanding());
+        } catch (Exception e) {
+            // Replacement is best effort: a failed EC2 lookup must not stop the manager.
+            System.err.println("[MANAGER] could not reconcile workers: " + e.getMessage());
+        }
+    }
+
+    /** EC2 states in which a worker can no longer process messages. */
+    private static boolean isDeadWorkerState(String state) {
+        return state.equals("terminated")
+                || state.equals("shutting-down")
+                || state.equals("stopped");
+    }
+
+    /** Reconciles at most once per WORKER_RECONCILE_INTERVAL_MILLIS. */
+    private void reconcileWorkersIfDue() {
+        long now = System.currentTimeMillis();
+        if (now - lastReconcileMillis < WORKER_RECONCILE_INTERVAL_MILLIS) {
+            return;
+        }
+        lastReconcileMillis = now;
+        reconcileWorkers();
     }
 
     /** Test seam: the IDs of the workers this manager launched. */

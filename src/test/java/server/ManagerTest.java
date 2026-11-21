@@ -11,9 +11,12 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Scanner;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -742,6 +745,165 @@ public class ManagerTest {
         assertEquals(Arrays.asList("zeta\t1", "alpha\t2", "mike\t3"),
                 Files.readAllLines(Paths.get(in + ".summary")),
                 "summary lines follow input URL order, not map order");
+    }
+
+    @Test
+    public void reconcileRemovesTerminatedWorker() {
+        Map<String, String> states = new HashMap<String, String>();
+        states.put("i-dead", "terminated");
+        Manager m = reconcileManager(states, new ArrayList<Integer>());
+        m.getWorkerInstanceIds().add("i-dead");
+
+        reconcile(m);
+
+        assertTrue(m.getWorkerInstanceIds().isEmpty(), "a terminated worker must be removed");
+    }
+
+    @Test
+    public void reconcileRemovesStoppedWorker() {
+        Map<String, String> states = new HashMap<String, String>();
+        states.put("i-dead", "stopped");
+        Manager m = reconcileManager(states, new ArrayList<Integer>());
+        m.getWorkerInstanceIds().add("i-dead");
+
+        reconcile(m);
+
+        assertTrue(m.getWorkerInstanceIds().isEmpty(), "a stopped worker must be removed");
+    }
+
+    @Test
+    public void reconcileRemovesMissingWorker() {
+        Map<String, String> states = new HashMap<String, String>();
+        Manager m = reconcileManager(states, new ArrayList<Integer>());
+        m.getWorkerInstanceIds().add("i-gone");
+
+        reconcile(m);
+
+        assertTrue(m.getWorkerInstanceIds().isEmpty(), "a worker absent from EC2 must be removed");
+    }
+
+    @Test
+    public void reconcileKeepsRunningWorker() {
+        Map<String, String> states = new HashMap<String, String>();
+        states.put("i-live", "running");
+        Manager m = reconcileManager(states, new ArrayList<Integer>());
+        m.getWorkerInstanceIds().add("i-live");
+
+        reconcile(m);
+
+        assertEquals(new HashSet<String>(Arrays.asList("i-live")), m.getWorkerInstanceIds(),
+                "a running worker must stay in the set");
+    }
+
+    @Test
+    public void reconcileLaunchesReplacementWhenDeadWorkerRemovedAndWorkOutstanding() throws Exception {
+        Map<String, String> states = new HashMap<String, String>();
+        states.put("i-dead", "terminated");
+        final List<Integer> launchCounts = new ArrayList<Integer>();
+        Manager m = new Manager("mgr-reconcile-replace", 10, 1) {
+            @Override
+            protected Map<String, String> workerStates(Collection<String> instanceIds) {
+                return states;
+            }
+
+            @Override
+            protected List<String> launchWorkerInstances(int count) {
+                launchCounts.add(count);
+                List<String> ids = new ArrayList<String>();
+                for (int i = 0; i < count; i++) {
+                    ids.add("i-new-" + i);
+                }
+                return ids;
+            }
+        };
+        m.getWorkerInstanceIds().add("i-dead");
+        Queues.get(Queues.managerQueueName())
+                .send(Message.createNewTask(inputFile("http://a", "http://b"), "app-reconcile"));
+        m.startOnce(); // dev mode: admits the client and leaves two images outstanding
+
+        Queues.setDev(false);
+        try {
+            m.reconcileWorkers();
+        } finally {
+            Queues.setDev(true);
+        }
+
+        assertFalse(m.getWorkerInstanceIds().contains("i-dead"));
+        assertEquals(Arrays.asList(2), launchCounts, "two outstanding images need two workers");
+        assertTrue(m.getWorkerInstanceIds().containsAll(Arrays.asList("i-new-0", "i-new-1")));
+    }
+
+    @Test
+    public void reconcileDoesNotLaunchWhenNoWorkOutstanding() {
+        Map<String, String> states = new HashMap<String, String>();
+        states.put("i-dead", "terminated");
+        final List<Integer> launchCounts = new ArrayList<Integer>();
+        Manager m = reconcileManager(states, launchCounts);
+        m.getWorkerInstanceIds().add("i-dead");
+
+        Queues.setDev(false);
+        try {
+            m.reconcileWorkers();
+        } finally {
+            Queues.setDev(true);
+        }
+
+        assertTrue(m.getWorkerInstanceIds().isEmpty());
+        assertTrue(launchCounts.isEmpty(), "no outstanding work means no replacement");
+    }
+
+    @Test
+    public void reconcileSkipsWhileTerminating() {
+        final List<Integer> stateCalls = new ArrayList<Integer>();
+        Manager m = new Manager("mgr-reconcile-terminating") {
+            @Override
+            protected Map<String, String> workerStates(Collection<String> instanceIds) {
+                stateCalls.add(instanceIds.size());
+                return Collections.<String, String>emptyMap();
+            }
+
+            @Override
+            protected void terminateInstances(List<String> instanceIds) {
+            }
+
+            @Override
+            protected void deleteDoneOcrQueueIfAws() {
+            }
+        };
+        m.getWorkerInstanceIds().add("i-still-there");
+        Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-reconcile"));
+        m.startOnce();
+        assertFalse(m.isRunning());
+
+        m.reconcileWorkers();
+
+        assertTrue(stateCalls.isEmpty(), "reconcile must not run while terminating");
+        assertEquals(new HashSet<String>(Arrays.asList("i-still-there")), m.getWorkerInstanceIds());
+    }
+
+    /** Runs reconcile with AWS mode on; the test manager overrides every AWS seam. */
+    private void reconcile(Manager m) {
+        Queues.setDev(false);
+        try {
+            m.reconcileWorkers();
+        } finally {
+            Queues.setDev(true);
+        }
+    }
+
+    private Manager reconcileManager(final Map<String, String> states, final List<Integer> launchCounts) {
+        return new Manager("mgr-reconcile", 10, 1) {
+            @Override
+            protected Map<String, String> workerStates(Collection<String> instanceIds) {
+                return states;
+            }
+
+            @Override
+            protected List<String> launchWorkerInstances(int count) {
+                launchCounts.add(count);
+                return Collections.<String>emptyList();
+            }
+        };
     }
 
     @Test
