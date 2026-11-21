@@ -403,9 +403,15 @@ public class Manager implements Runnable {
     private void launchWorkers(int count) {
         AWS aws = AWS.getInstance();
         String script = "#!/bin/bash\n"
+                + "set -e\n"
+                + "exec > >(tee -a /var/log/dsp-bootstrap.log) 2>&1\n"
+                + "mkdir -p /home/ec2-user\n"
+                + "export DEBIAN_FRONTEND=noninteractive\n"
+                + "if ! command -v aws >/dev/null 2>&1 || ! command -v java >/dev/null 2>&1 || ! command -v tesseract >/dev/null 2>&1; then\n"
+                + "  apt-get update -y && apt-get install -y awscli openjdk-11-jre-headless tesseract-ocr tesseract-ocr-eng\n"
+                + "fi\n"
                 + "aws s3 cp s3://" + aws.bucketName + "/" + WORKER_JAR_KEY + " " + WORKER_JAR_PATH + "\n"
-                + "JAVA_BIN=$(ls /usr/lib/jvm/*1.8*/bin/java 2>/dev/null | head -n 1)\n"
-                + "[ -z \"$JAVA_BIN\" ] && JAVA_BIN=$(command -v java)\n"
+                + "JAVA_BIN=$(command -v java)\n"
                 + (debug ? "touch /home/ec2-user/worker.log\n(while true; do aws s3 cp /home/ec2-user/worker.log s3://"
                 + aws.bucketName + "/" + AWS.S3_PREFIX + "logs/worker-$(hostname).log --quiet; sleep 5; done) &\n" : "")
                 + "\"$JAVA_BIN\" -jar " + WORKER_JAR_PATH + " > /home/ec2-user/worker.log 2>&1 || { cat /home/ec2-user/worker.log > /dev/console; exit 1; }\n";
