@@ -35,32 +35,33 @@ public class WorkerTest {
     }
 
     /**
-     * Exercises the real Tess4J path without the network. Skips when the native Tesseract
-     * library/trained data is not installed on this machine; EC2 nodes install it at boot.
+     * Exercises the real Tess4J path without the network and without a system Tesseract:
+     * the native libraries and trained data are bundled in the jar. The bundle is linux-x86-64,
+     * so the test is skipped on other platforms.
      */
-@Test
+    @Test
     public void tess4jReadsAGeneratedImage() throws Exception {
+        // The bundled engine is linux-x86-64 only; elsewhere there is no engine to test.
+        Assumptions.assumeTrue(System.getProperty("os.name").toLowerCase().contains("linux")
+                && System.getProperty("os.arch").equals("amd64"),
+                "bundled native libraries are linux-x86-64 only");
+
         File png = File.createTempFile("ocr-check-", ".png");
         png.deleteOnExit();
 
-        String text;
-        try {
-            BufferedImage img = new BufferedImage(600, 150, BufferedImage.TYPE_INT_RGB);
-            Graphics2D g = img.createGraphics();
-            g.setColor(Color.WHITE);
-            g.fillRect(0, 0, 600, 150);
-            g.setColor(Color.BLACK);
-            g.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 48));
-            g.drawString("HELLO 12345", 30, 95);
-            g.dispose();
-            ImageIO.write(img, "png", png);
+        BufferedImage img = new BufferedImage(600, 150, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = img.createGraphics();
+        g.setColor(Color.WHITE);
+        g.fillRect(0, 0, 600, 150);
+        g.setColor(Color.BLACK);
+        g.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 48));
+        g.drawString("HELLO 12345", 30, 95);
+        g.dispose();
+        ImageIO.write(img, "png", png);
 
-            text = Worker.processOne(png.getAbsolutePath());
-        } catch (RuntimeException | LinkageError e) {
-            Assumptions.assumeTrue(false, "native graphics/Tesseract unavailable: " + e.getMessage());
-            return;
-        }
+        String text = Worker.processOne(png.getAbsolutePath());
         assertTrue(text.contains("HELLO"), "OCR text was: " + text);
+        assertTrue(text.contains("12345"), "OCR text was: " + text);
     }
 
     @Test

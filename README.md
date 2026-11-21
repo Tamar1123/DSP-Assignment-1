@@ -43,22 +43,28 @@ The system decouples client submission, task orchestration, and OCR execution ac
 
 ## AMI & Environment Setup
 
-- **AMI ID**: `ami-0046c29ee3573ac7f` — the team's custom OCR image, `us-east-1` (configured
-  in `src/main/java/utils/AWS.java`).
-- **Native OCR Stack**: the image is an Amazon Linux AMI (`2018.03`) pre-provisioned with
-  `libwebp`, Leptonica, Tesseract and `eng.traineddata`, plus Java 8 and the AWS CLI. The
-  user-data scripts download the jars to `/home/ec2-user/` and run them without installing
-  anything.
-- **Availability**: the AMI must be shared with the account or copied into it; if it is not
-  visible, EC2 reports `Not authorized for images` and no nodes start.
+- **AMI ID**: `ami-0046c29ee3573ac7f` — the team's custom OCR image in `us-east-1`
+  (configured in `src/main/java/utils/AWS.java`): Amazon Linux with Java 8, the AWS CLI,
+  Leptonica, Tesseract and `eng.traineddata`. The image must be shared with the account you
+  run in; if it is not visible, EC2 reports `Not authorized for images` and no node starts.
+- **OCR is bundled, not installed**: Tesseract, Leptonica and their shared-library closure
+  live in `src/main/resources/ocr-native/linux-x86-64/`, and the trained data comes from the
+  tess4j jar. `utils.OcrRuntime` extracts both from the classpath on first use, loads the
+  libraries and points Tess4J at them, so a node needs no `apt`/`yum` OCR install. If the
+  bundled binaries cannot load (they are built on Ubuntu 22.04, so they need a glibc at least
+  that new), the worker logs it and falls back to the image's own Tesseract installation.
+- **Refreshing the native bundle**: `scripts/bundle-ocr-native.sh` re-downloads the Ubuntu
+  jammy packages and rewrites `src/main/resources/ocr-native/linux-x86-64/` (the versions are
+  recorded in that directory's `MANIFEST.txt`). Re-run it for another glibc baseline; the
+  `.so` files must not require a newer glibc than the target image.
 - **Local build tools**: JDK 17 and Apache Maven (`mvn`).
 
 ## Prerequisites & Configuration
 
 1. **AWS Credentials**: Configure valid AWS credentials (`~/.aws/credentials` or environment variables) with permissions for **EC2**, **S3**, and **SQS** in `us-east-1` (such as AWS Learner Lab session credentials).
 2. **SSH Key Pair**: Ensure your EC2 key pair (e.g., `~/.ssh/vockey.pem`) is available if connecting to EC2 instances for inspection or debugging.
-3. **AMI Verification**: Confirm `public static String ami` in `src/main/java/utils/AWS.java`
-   points at the team OCR AMI and that it is available in your account/region.
+3. **Image**: the team OCR AMI must be shared with your account (see above); the OCR engine
+   is also bundled inside `Worker.jar`, so a plain image works too.
 
 ## Build & Run Tests
 
@@ -68,10 +74,9 @@ Compile the project and execute the offline test suite from the repository root:
 mvn -o test
 ```
 
-The suite needs no AWS credentials. 75 tests pass; the network OCR smoke test is skipped, and
-so is the local Tess4J test when native Tesseract is not installed. To run the real OCR test
-locally, install `tesseract-ocr` + `tesseract-ocr-eng` (or point `LD_LIBRARY_PATH` and
-`TESSDATA_PREFIX` at an extracted copy).
+The suite needs no AWS credentials and no system Tesseract: the real OCR test runs against the
+bundled native libraries. Only the network OCR smoke test is disabled. `TESSDATA_PREFIX` still
+overrides the bundled trained data when set.
 
 ## Running the Application
 
@@ -100,8 +105,8 @@ java -jar target/App.jar <inputFileName> <outputFileName> \
   `s3://<bucket>/assignment1/logs/`.
 
 **Measured run:** `manager-clients-n=1`, `worker-files-n=100`, 3 sample URLs (1 manager + 1
-worker) took about **3 min 50 s** from `NEW_TASK` to `DONE_TASK` on the Ubuntu boot-install
-path. The pinned team AMI already contains the OCR stack, so boot should be faster; re-measure
-before submitting. One URL OCRed successfully; two sample URLs were dead (404 / DNS) and
-correctly rendered as error lines. `scripts/lab-run.sh` runs this small case end to end and
+worker) took about **3 min 50 s** from `NEW_TASK` to `DONE_TASK` on the earlier Ubuntu
+boot-install path. The OCR install is no longer part of boot (it ships in the jar), so
+re-measure before submitting. One URL OCRed successfully; two sample URLs were dead
+(404 / DNS) and correctly rendered as error lines. `scripts/lab-run.sh` runs this small case end to end and
 cleans up the instances, queues and S3 objects afterwards.

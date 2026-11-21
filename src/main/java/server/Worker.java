@@ -3,6 +3,7 @@ package server;
 import net.sourceforge.tess4j.Tesseract;
 import net.sourceforge.tess4j.TesseractException;
 import utils.Message;
+import utils.OcrRuntime;
 import utils.Queue;
 import utils.Queues;
 import utils.Received;
@@ -201,20 +202,8 @@ public class Worker implements Runnable {
     public static String processOne(String inputFileName) {
         Tesseract tesseract = new Tesseract();
         tesseract.setLanguage("eng");
-        String tessDataEnv = System.getenv("TESSDATA_PREFIX");
-        if (tessDataEnv != null && !tessDataEnv.trim().isEmpty()) {
-            tesseract.setDatapath(tessDataEnv.trim());
-        } else {
-            File defaultTessdata = new File("/usr/share/tesseract-ocr/4.00/tessdata");
-            if (defaultTessdata.isDirectory()) {
-                tesseract.setDatapath(defaultTessdata.getAbsolutePath());
-            } else {
-                File altTessdata = new File("/usr/share/tesseract-ocr/5/tessdata");
-                if (altTessdata.isDirectory()) {
-                    tesseract.setDatapath(altTessdata.getAbsolutePath());
-                }
-            }
-        }
+        // The engine and its trained data ship inside this jar; nothing is installed per node.
+        tesseract.setDatapath(OcrRuntime.ensureReady());
         try {
             String result = tesseract.doOCR(new File(inputFileName));
             return result == null ? "" : result.trim();

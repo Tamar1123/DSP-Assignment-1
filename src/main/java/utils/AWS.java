@@ -27,7 +27,7 @@ public class AWS {
     private final Ec2Client ec2;
 
     /** Team OCR AMI (Amazon Linux with Java 8, Tesseract, Leptonica and trained data). */
-    public static String ami = "ami-0e72706534bb166e3";
+    public static String ami = "ami-0046c29ee3573ac7f";
 
     public static Region region1 = Region.US_EAST_1;
     public static Region region2 = Region.US_EAST_1;
@@ -70,7 +70,7 @@ public class AWS {
         private static final AWS INSTANCE = new AWS();
     }
 
-    public String bucketName = "dsp1-only-together2-262171960391";
+    public String bucketName = "dsp1-only-together2-654654248213";
     public static final String S3_PREFIX = "assignment1/";
 
 

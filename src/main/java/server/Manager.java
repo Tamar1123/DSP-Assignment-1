@@ -407,8 +407,9 @@ public class Manager implements Runnable {
                 + "exec > >(tee -a /var/log/dsp-bootstrap.log) 2>&1\n"
                 + "mkdir -p /home/ec2-user\n"
                 + "export DEBIAN_FRONTEND=noninteractive\n"
-                + "if ! command -v aws >/dev/null 2>&1 || ! command -v java >/dev/null 2>&1 || ! command -v tesseract >/dev/null 2>&1; then\n"
-                + "  apt-get update -y && apt-get install -y awscli openjdk-11-jre-headless tesseract-ocr tesseract-ocr-eng\n"
+                // No OCR install: Tesseract, Leptonica and the trained data ship inside Worker.jar.
+                + "if ! command -v aws >/dev/null 2>&1 || ! command -v java >/dev/null 2>&1; then\n"
+                + "  apt-get update -y && apt-get install -y awscli openjdk-11-jre-headless\n"
                 + "fi\n"
                 + "aws s3 cp s3://" + aws.bucketName + "/" + WORKER_JAR_KEY + " " + WORKER_JAR_PATH + "\n"
                 + "JAVA_BIN=$(command -v java)\n"
