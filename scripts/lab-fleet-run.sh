@@ -51,7 +51,8 @@ if [ -z "$BUCKET" ]; then
     --query 'Buckets[?starts_with(Name, `dsp1-only-together2-`)].Name | [0]' \
     --output text 2>/dev/null || true)
 fi
-[ -n "$BUCKET" ] && [ "$BUCKET" != "None" ] || die "could not resolve the S3 bucket; set S3_BUCKET"
+# Listing buckets is denied in the lab: fall back to the name the app (utils.AWS) uses.
+if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ]; then BUCKET=dsp1-only-together2; fi
 LOGS=s3://$BUCKET/assignment1/logs
 
 CAP=${DSP_MAX_INSTANCES:-9}

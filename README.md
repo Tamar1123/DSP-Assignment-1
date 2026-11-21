@@ -12,14 +12,14 @@ A distributed, asynchronous image-to-text (OCR) processing system built with Jav
 
 The system decouples client submission, task orchestration, and OCR execution across AWS services and dedicated application components:
 
-- **LocalApp (`client`)**: Accepts input image URL lists, uploads artifacts and input files to Amazon S3, submits jobs to the Manager request queue, and polls the client's SQS queue for completion or error notifications before writing the final summary output.
+- **LocalApp (`client`)**: Accepts input image URL lists, uploads artifacts and input files to Amazon S3, submits jobs to its assigned manager's request queue, and polls the client's SQS queue for completion or error notifications before writing the final summary output.
 - **Manager (`server.Manager` — `Router` & `IoWorker`)**: Coordinates active client tasks (`ClientTask`) across dedicated routing and I/O worker threads, fans out image URLs to OCR work queues, tracks per-client completion (`outstanding` / `done`), preserves input URL ordering when aggregating recognized text, uploads summary files to S3, and manages worker instance scaling and termination.
 - **Worker (`server.Worker`)**: Polls image tasks from SQS, downloads target images, performs OCR using **Tess4J** backed by native Tesseract, Leptonica, and `libwebp` libraries with English trained data (`eng.traineddata`), and publishes OCR results or formatted error reports back to the completion queue.
 - **AWS Transport & Storage (`utils.AWS`, `utils.Queue`, `utils.Queues`)**: Uses Amazon S3 for input/summary storage and Amazon SQS (supporting batched message sends and bounded client timeouts) for asynchronous communication, alongside an in-memory queue mode (`dev`) for local execution and automated unit testing.
 
-### Queue topology and messages
+### Communication
 
-- `manager_queue` — shared request queue; every client sends `NEW_TASK` and `TERMINATE` here.
+- `manager_<managerID>` — one request queue per manager; a client sends `NEW_TASK` and `TERMINATE` to the manager it was assigned.
 - `worker_queue` — shared worker queue; the manager sends `NEW_IMAGE_TASK`; any worker may take
   any message.
 - `client_<localAppID>` — one reply queue per client, created by the client; the manager sends
@@ -53,10 +53,6 @@ The system decouples client submission, task orchestration, and OCR execution ac
   libraries and points Tess4J at them, so a node needs no `apt`/`yum` OCR install. If the
   bundled binaries cannot load (they are built on Ubuntu 22.04, so they need a glibc at least
   that new), the worker logs it and falls back to the image's own Tesseract installation.
-- **Refreshing the native bundle**: `scripts/bundle-ocr-native.sh` re-downloads the Ubuntu
-  jammy packages and rewrites `src/main/resources/ocr-native/linux-x86-64/` (the versions are
-  recorded in that directory's `MANIFEST.txt`). Re-run it for another glibc baseline; the
-  `.so` files must not require a newer glibc than the target image.
 - **Local build tools**: JDK 17 and Apache Maven (`mvn`).
 
 ## Prerequisites & Configuration
@@ -66,21 +62,9 @@ The system decouples client submission, task orchestration, and OCR execution ac
 3. **Image**: nothing to prepare — the default public Ubuntu 22.04 AMI is available in every
    account, and the OCR engine ships inside `Worker.jar`.
 
-## Build & Run Tests
+## Build
 
-Compile the project and execute the offline test suite from the repository root:
-
-```bash
-mvn -o test
-```
-
-The suite needs no AWS credentials and no system Tesseract: the real OCR test runs against the
-bundled native libraries. Only the network OCR smoke test is disabled. `TESSDATA_PREFIX` still
-overrides the bundled trained data when set.
-
-## Running the Application
-
-Package the application JAR with Maven:
+Package the application JAR with Maven, from the repository root:
 
 ```bash
 mvn -o clean package
@@ -88,6 +72,8 @@ mvn -o clean package
 
 This produces shadable, self-contained jars in `target/`: `App.jar` (the local application),
 `Manager.jar` and `Worker.jar`.
+
+## Running the Application
 
 The assignment contract:
 
@@ -113,7 +99,7 @@ cleans up the instances, queues and S3 objects afterwards.
 
 ## How it works (step by step)
 
-1. LocalApp reads the URL file, finds a manager with a free client slot (EC2 `Name=manager` tag plus free-slot tag) or starts one, uploads the input to S3, creates its own `client_<id>` queue and sends `NEW_TASK` to `manager_queue`.
+1. LocalApp reads the URL file, finds a manager with a free client slot (EC2 `Name=manager` tag plus free-slot tag) or starts one, uploads the input to S3, creates its own `client_<id>` queue and sends `NEW_TASK` to its manager's `manager_<managerID>` queue.
 2. The manager's Router thread admits the client (up to `manager-clients-n` concurrent) and hands the blocking work to its IoWorker: download the input from S3, send one `NEW_IMAGE_TASK` per URL (batched) to `worker_queue`, and start `ceil(URLs / worker-files-n)` workers minus those already running.
 3. Workers take any message from the shared queue, download the image, OCR it (Tesseract), send `DONE_OCR` (text or an error description) to the manager's `done_ocr_<managerID>` queue, then delete the message.
 4. The manager counts results per client; when all are in, it writes the summary (in input order) to S3 and sends `DONE_TASK` to `client_<id>`.
