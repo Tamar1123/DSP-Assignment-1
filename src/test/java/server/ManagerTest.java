@@ -428,6 +428,21 @@ public class ManagerTest {
     }
 
     @Test
+    public void admissionPublishesFreeSlotsImmediately() throws Exception {
+        // A manager at 2/2 must advertise free=0 within one poll: admission alone publishes.
+        final List<Integer> published = new ArrayList<Integer>();
+        Manager m = new Manager("mgr-free", 2, 5) {
+            @Override
+            protected void publishFreeSlots(int free) {
+                published.add(free);
+            }
+        };
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(inputFile("http://a"), "app-free"));
+        m.startOnce();
+        assertEquals(Arrays.asList(2 - 1), published, "admission must publish maxClients - 1");
+    }
+
+    @Test
     public void emptyInputFreesItsSlotAtOnce() throws Exception {
         Manager m = new Manager("mgr-10", 1, 5);
         Queues.get(Queues.managerQueueName()).send(Message.createNewTask(inputFile(), "app-10"));

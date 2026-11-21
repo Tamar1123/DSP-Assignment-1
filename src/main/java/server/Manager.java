@@ -482,11 +482,16 @@ public class Manager implements Runnable {
 
     /** Publishes free slots as the EC2 free tag; a hint that may lag. IoWorker only. */
     private void updateFreeSlots() {
+        publishFreeSlots(maxClients - clientTasks.size());
+    }
+
+    /** Protected seam for the free-slot tag write; no-op in dev so tests never touch AWS. */
+    protected void publishFreeSlots(int free) {
         if (Queues.isDev()) {
             return;
         }
         try {
-            AWS.getInstance().setFreeSlots(managerID, maxClients - clientTasks.size());
+            AWS.getInstance().setFreeSlots(managerID, free);
         } catch (Exception e) {
             System.err.println("[MANAGER] could not update free slots tag: " + e.getMessage());
         }
@@ -664,6 +669,7 @@ public class Manager implements Runnable {
         @Override
         public void run() {
             try {
+                updateFreeSlots(); // advertise capacity at admission, before the URLs fan out
                 List<String> urls = Collections.unmodifiableList(readUrls(task.inputFileLocation));
                 task.urls = urls;
                 task.outstanding.set(urls.size());
