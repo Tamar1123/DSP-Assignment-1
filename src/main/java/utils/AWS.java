@@ -138,7 +138,7 @@ public String bucketName;
     
     // EC2
     public String createEC2(String script, String tagName, int numberOfInstances) {
-        return createEC2(script, tagName, numberOfInstances, UNKNOWN_FREE);
+        return createEC2(script, tagName, numberOfInstances, UNKNOWN_FREE, null);
     }
 
     /**
@@ -147,11 +147,16 @@ public String bucketName;
      * passes {@code manager-clients-n} so the very first describe call already sees it.
      */
     public String createEC2(String script, String tagName, int numberOfInstances, int freeSlots) {
-        List<Tag> tags = new ArrayList<>();
-        tags.add(Tag.builder().key("Name").value(tagName).build());
-        if (freeSlots != UNKNOWN_FREE) {
-            tags.add(Tag.builder().key(FREE_TAG).value(formatFreeSlots(freeSlots)).build());
-        }
+        return createEC2(script, tagName, numberOfInstances, freeSlots, null);
+    }
+
+    /**
+     * As {@link #createEC2(String, String, int, int)}, plus a {@link #MANAGER_TAG} tag
+     * when {@code managerID} is non-null and non-empty, so a terminating manager can
+     * later find and stop the workers it launched.
+     */
+    public String createEC2(String script, String tagName, int numberOfInstances, int freeSlots, String managerID) {
+        List<Tag> tags = buildInstanceTags(tagName, freeSlots, managerID);
         RunInstancesRequest runRequest = RunInstancesRequest.builder()
                 .instanceType(InstanceType.M4_LARGE)
                 .imageId(ami)
@@ -173,6 +178,31 @@ public String bucketName;
                     instanceId, ami);
         }
         return instanceId;
+    }
+
+    // ---- instance tag building --------------------------------------------------
+
+    /**
+     * EC2 tag key carrying the ID of the manager that launched the instance.
+     * Workers carry it so a terminating manager can find and stop its own workers.
+     */
+    public static final String MANAGER_TAG = "managerID";
+
+    /**
+     * Pure tag set for a new instance: always {@code Name}, the free-slot hint when
+     * {@code freeSlots} is not {@link #UNKNOWN_FREE}, and {@code managerID} when
+     * non-null and non-empty. No AWS client is touched, so tests can call it directly.
+     */
+    public static List<Tag> buildInstanceTags(String tagName, int freeSlots, String managerID) {
+        List<Tag> tags = new ArrayList<>();
+        tags.add(Tag.builder().key("Name").value(tagName).build());
+        if (freeSlots != UNKNOWN_FREE) {
+            tags.add(Tag.builder().key(FREE_TAG).value(formatFreeSlots(freeSlots)).build());
+        }
+        if (managerID != null && !managerID.isEmpty()) {
+            tags.add(Tag.builder().key(MANAGER_TAG).value(managerID).build());
+        }
+        return tags;
     }
 
     // ---- manager free-slot tag -------------------------------------------------

@@ -416,7 +416,9 @@ public class Manager implements Runnable {
                 + (debug ? "touch /home/ec2-user/worker.log\n(while true; do aws s3 cp /home/ec2-user/worker.log s3://"
                 + aws.bucketName + "/" + AWS.S3_PREFIX + "logs/worker-$(hostname).log --quiet; sleep 5; done) &\n" : "")
                 + "\"$JAVA_BIN\" -jar " + WORKER_JAR_PATH + " > /home/ec2-user/worker.log 2>&1 || { cat /home/ec2-user/worker.log > /dev/console; exit 1; }\n";
-        aws.createEC2(script, WORKER_TAG, count);
+        // Tag workers with this manager's ID so a terminating manager can find and stop
+        // the workers it launched (see AWS.MANAGER_TAG).
+        aws.createEC2(script, WORKER_TAG, count, AWS.UNKNOWN_FREE, managerID);
     }
 
     private int totalOutstanding() {
