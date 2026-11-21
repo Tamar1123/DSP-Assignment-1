@@ -12,7 +12,7 @@ import java.util.List;
 import java.util.Map;
 
 // Reads input URL lists and writes summary files; local files in dev mode, S3 otherwise.
-class ObjectStore {
+class ClientFileStore {
     void writeSummary(List<String> urls, Map<String, String> texts, String summaryLocation) throws IOException {
         // In dev mode summaryLocation is a local path; on AWS it is an S3 key, so go via a temp file.
         File file = Queues.isDev() ? new File(summaryLocation) : File.createTempFile("manager-summary-", ".txt");

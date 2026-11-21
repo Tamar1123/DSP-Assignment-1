@@ -59,7 +59,7 @@ public class Manager implements Runnable {
 
     // Runs every blocking job, finishes before fan-outs, on one thread.
     private final IoWorker ioWorker;
-    private final ObjectStore objectStore = new ObjectStore();
+    private final ClientFileStore clientFiles = new ClientFileStore();
 
     private volatile boolean running = true;
     // Set by the first TERMINATE: stop admitting, drain until clientTasks is empty.
@@ -493,11 +493,11 @@ public class Manager implements Runnable {
 
 
     protected void writeSummary(ClientTask task, String summaryLocation) throws IOException {
-        objectStore.writeSummary(task.urls, task.texts, summaryLocation);
+        clientFiles.writeSummary(task.urls, task.texts, summaryLocation);
     }
 
     protected List<String> readUrls(String inputFileLocation) throws IOException {
-        return objectStore.readUrls(inputFileLocation);
+        return clientFiles.readUrls(inputFileLocation);
     }
 
     private void stopWorkers() {
