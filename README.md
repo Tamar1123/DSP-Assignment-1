@@ -43,10 +43,9 @@ The system decouples client submission, task orchestration, and OCR execution ac
 
 ## AMI & Environment Setup
 
-- **AMI ID**: `ami-0046c29ee3573ac7f` — the team's custom OCR image in `us-east-1`
-  (configured in `src/main/java/utils/AWS.java`): Amazon Linux with Java 8, the AWS CLI,
-  Leptonica, Tesseract and `eng.traineddata`. The image must be shared with the account you
-  run in; if it is not visible, EC2 reports `Not authorized for images` and no node starts.
+- **AMI ID**: `ami-0e72706534bb166e3` — a public Ubuntu 22.04 image in `us-east-1`
+  (configured in `src/main/java/utils/AWS.java`). It is visible in every account, so no
+  custom image has to be shared or copied.
 - **OCR is bundled, not installed**: Tesseract, Leptonica and their shared-library closure
   live in `src/main/resources/ocr-native/linux-x86-64/`, and the trained data comes from the
   tess4j jar. `utils.OcrRuntime` extracts both from the classpath on first use, loads the
@@ -63,8 +62,8 @@ The system decouples client submission, task orchestration, and OCR execution ac
 
 1. **AWS Credentials**: Configure valid AWS credentials (`~/.aws/credentials` or environment variables) with permissions for **EC2**, **S3**, and **SQS** in `us-east-1` (such as AWS Learner Lab session credentials).
 2. **SSH Key Pair**: Ensure your EC2 key pair (e.g., `~/.ssh/vockey.pem`) is available if connecting to EC2 instances for inspection or debugging.
-3. **Image**: the team OCR AMI must be shared with your account (see above); the OCR engine
-   is also bundled inside `Worker.jar`, so a plain image works too.
+3. **Image**: nothing to prepare — the default public Ubuntu 22.04 AMI is available in every
+   account, and the OCR engine ships inside `Worker.jar`.
 
 ## Build & Run Tests
 

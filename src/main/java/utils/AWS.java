@@ -26,8 +26,8 @@ public class AWS {
     private final SqsClient sqs;
     private final Ec2Client ec2;
 
-    /** Team OCR AMI (Amazon Linux with Java 8, Tesseract, Leptonica and trained data). */
-    public static String ami = "ami-0046c29ee3573ac7f";
+    /** Public Ubuntu 22.04 AMI (us-east-1); boot installs the JRE/AWS CLI if absent. */
+    public static String ami = "ami-0e72706534bb166e3";
 
     public static Region region1 = Region.US_EAST_1;
     public static Region region2 = Region.US_EAST_1;
