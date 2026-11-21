@@ -103,8 +103,6 @@ public class Manager implements Runnable {
         this.workerQueue = Queues.get(Queues.workerQueueName());
         this.doneOcrQueue = Queues.get(Queues.doneOcrQueueName(managerID));
         this.workers = new WorkerOrchestrator(new WorkerOrchestrator.Port() {
-            public int liveWorkerCount() { return Manager.this.liveWorkerCount(); }
-
             public int liveInstanceCount() { return Manager.this.liveInstanceCount(); }
 
             public List<String> launchWorkerInstances(int count) {
@@ -397,9 +395,6 @@ public class Manager implements Runnable {
     }
 
     protected void ensureWorkers(int outstanding) { workers.ensure(outstanding); }
-
-    // Live workers fleet-wide, all managers included; protected so tests never reach AWS.
-    protected int liveWorkerCount() { return AWS.getInstance().runningWorkerCount(); }
 
     // Live instances fleet-wide (managers plus workers); protected so tests never reach AWS.
     protected int liveInstanceCount() { return AWS.getInstance().runningInstanceCount(); }

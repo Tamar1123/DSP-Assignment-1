@@ -16,7 +16,6 @@ import java.util.concurrent.ConcurrentHashMap;
 // Calls back through Port for everything that touches AWS, so tests can stub it.
 class WorkerOrchestrator {
     interface Port {
-        int liveWorkerCount();
         int liveInstanceCount();
         List<String> launchWorkerInstances(int count);
         void terminateInstances(List<String> ids);
@@ -59,25 +58,36 @@ class WorkerOrchestrator {
 
     Set<String> ids() { return workerInstanceIds; }
 
-    // Starts the workers needed for the outstanding images, sized against the whole fleet and
-    // capped by the global instance limit.
+    // ceil(urlCount / workerFilesN) workers, minus this manager's own workers, bounded by the
+    // fleet headroom. ownWorkers and liveInstances are counts, not booleans.
+    static int workersToLaunch(int urlCount, int workerFilesN, int ownWorkers, int liveInstances) {
+        if (urlCount <= 0) {
+            return 0;
+        }
+        int needed = workersNeeded(urlCount, workerFilesN);
+        int headroom = MAX_INSTANCES - liveInstances;
+        return Math.max(0, Math.min(needed - ownWorkers, headroom));
+    }
+
+    // Starts this manager's share of the workers for its outstanding images, capped by the
+    // global instance limit.
     void ensure(int outstanding) {
         if (Queues.isDev() || outstanding <= 0) {
             return;
         }
         try {
             int needed = workersNeeded(outstanding, workerFilesN);
-            int liveWorkers = port.liveWorkerCount();
+            int ownWorkers = workerInstanceIds.size();
             int liveInstances = port.liveInstanceCount();
-            int toStart = Math.min(needed - liveWorkers, MAX_INSTANCES - liveInstances);
+            int toStart = workersToLaunch(outstanding, workerFilesN, ownWorkers, liveInstances);
             if (toStart <= 0) {
-                port.log("no workers to launch: " + needed + " needed, " + liveWorkers
-                        + " live fleet-wide, instance cap at " + liveInstances + "/" + MAX_INSTANCES);
+                port.log("no workers to launch: " + needed + " needed, " + ownWorkers
+                        + " owned, instance cap at " + liveInstances + "/" + MAX_INSTANCES);
                 return;
             }
             List<String> launched = launch(toStart);
             port.log("launched " + launched.size() + " worker(s): " + outstanding + " image(s), "
-                    + workerFilesN + " per worker, " + liveWorkers + " were live fleet-wide, "
+                    + workerFilesN + " per worker, " + ownWorkers + " were owned, "
                     + liveInstances + "/" + MAX_INSTANCES + " instances before launch");
         } catch (Exception e) {
             // Worker bootstrap is best effort: the manager must keep serving clients.

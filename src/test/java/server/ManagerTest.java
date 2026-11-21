@@ -20,7 +20,6 @@ import java.util.Map;
 import java.util.Scanner;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -188,189 +187,6 @@ public class ManagerTest {
         assertTrue(script.contains("aws ec2 terminate-instances --region us-east-1 --instance-ids \"$INSTANCE_ID\" || true"),
                 "a worker exit must terminate its own instance");
         assertTrue(script.contains("exit $STATUS"), "the worker exit status must be returned");
-    }
-
-    @Test
-    public void ensureWorkersSizesAgainstTheWholeFleet() {
-        final List<Integer> launchCounts = new ArrayList<Integer>();
-        Manager m = new Manager("mgr-ensure", 10, 3) {
-            @Override
-            protected int liveWorkerCount() {
-                return 1; // another manager's worker counts against the fleet need
-            }
-
-            @Override
-            protected int liveInstanceCount() {
-                return 2; // that worker plus this manager
-            }
-
-            @Override
-            protected List<String> launchWorkerInstances(int count) {
-                launchCounts.add(count);
-                return Collections.<String>emptyList();
-            }
-        };
-
-        Queues.setDev(false);
-        try {
-            // 6 images / 3 per worker = 2 needed; 1 is live fleet-wide, so launch 1 more.
-            m.ensureWorkers(6);
-        } finally {
-            Queues.setDev(true);
-        }
-
-        assertEquals(Arrays.asList(1), launchCounts);
-    }
-
-    @Test
-    public void twoManagersShareTheFleetWorkerBudget() {
-        // Each manager carries 12 URLs at worker-files-n=2, i.e. 6 workers each. The first
-        // manager launches the whole need; the second sees the fleet the first built and
-        // launches none, so the two managers together never run two full worker sets.
-        final List<Integer> launchCounts = new ArrayList<Integer>();
-        final AtomicInteger fleetWorkers = new AtomicInteger(0);
-        Manager a = fleetAwareManager("mgr-fleet-a", launchCounts, fleetWorkers, 2);
-        Manager b = fleetAwareManager("mgr-fleet-b", launchCounts, fleetWorkers, 2);
-
-        Queues.setDev(false);
-        try {
-            a.ensureWorkers(12); // manager A's client: 6 workers needed, fleet is empty
-            b.ensureWorkers(12); // manager B's client: the fleet already covers the need
-        } finally {
-            Queues.setDev(true);
-        }
-
-        assertEquals(Arrays.asList(6), launchCounts,
-                "the two managers must launch at most one full worker set");
-        assertEquals(6, fleetWorkers.get());
-    }
-
-    @Test
-    public void noLaunchWhenTheFleetAlreadyHasEnoughWorkers() {
-        final List<Integer> launchCounts = new ArrayList<Integer>();
-        final AtomicInteger fleetWorkers = new AtomicInteger(6); // 6 workers already live fleet-wide
-        Manager a = fleetAwareManager("mgr-fleet-a2", launchCounts, fleetWorkers, 2);
-        Manager b = fleetAwareManager("mgr-fleet-b2", launchCounts, fleetWorkers, 2);
-
-        Queues.setDev(false);
-        try {
-            a.ensureWorkers(12); // 12 fleet URLs / 2 per worker = 6 needed = 6 live: nothing to add
-            b.ensureWorkers(12);
-        } finally {
-            Queues.setDev(true);
-        }
-
-        assertTrue(launchCounts.isEmpty(), "neither manager may launch when the fleet is full");
-    }
-
-    @Test
-    public void globalCapHeadroomLimitsTheLaunch() {
-        final List<Integer> launchCounts = new ArrayList<Integer>();
-        Manager m = new Manager("mgr-cap", 10, 2) {
-            @Override
-            protected int liveWorkerCount() {
-                return 0;
-            }
-
-            @Override
-            protected int liveInstanceCount() {
-                return Manager.MAX_INSTANCES - 1; // only one instance of headroom left
-            }
-
-            @Override
-            protected List<String> launchWorkerInstances(int count) {
-                launchCounts.add(count);
-                return Collections.<String>emptyList();
-            }
-        };
-
-        Queues.setDev(false);
-        try {
-            // 12 images / 2 per worker = 6 needed, but the global cap allows one more instance.
-            m.ensureWorkers(12);
-        } finally {
-            Queues.setDev(true);
-        }
-
-        assertEquals(Arrays.asList(1), launchCounts, "the global cap headroom must bound the launch");
-    }
-
-    @Test
-    public void ensureWorkersDoesNotLaunchWhenTheFleetIsAtTheGlobalCap() {
-        final List<Integer> launchCounts = new ArrayList<Integer>();
-        Manager m = new Manager("mgr-cap", 10, 1) {
-            @Override
-            protected int liveWorkerCount() {
-                return 0;
-            }
-
-            @Override
-            protected int liveInstanceCount() {
-                return Manager.MAX_INSTANCES; // the fleet is at the cap: no headroom at all
-            }
-
-            @Override
-            protected List<String> launchWorkerInstances(int count) {
-                launchCounts.add(count);
-                return Collections.<String>emptyList();
-            }
-        };
-
-        Queues.setDev(false);
-        try {
-            m.ensureWorkers(100);
-        } finally {
-            Queues.setDev(true);
-        }
-
-        assertTrue(launchCounts.isEmpty(),
-                "a fleet at MAX_INSTANCES must not launch any worker");
-    }
-
-    @Test
-    public void twoManagersRespectGlobalCapHeadroom() {
-        final List<Integer> launchCounts = new ArrayList<Integer>();
-        final AtomicInteger fleetWorkers = new AtomicInteger(0);
-        Manager a = fleetAwareManager("mgr-fleet-cap-a", launchCounts, fleetWorkers, 2);
-
-        Queues.setDev(false);
-        try {
-            // 20 images / 2 per worker = 10 needed; two live managers leave 7 slots.
-            a.ensureWorkers(20);
-        } finally {
-            Queues.setDev(true);
-        }
-
-        assertEquals(Arrays.asList(7), launchCounts,
-                "the global headroom after two managers must bound the launch");
-        assertEquals(7, fleetWorkers.get());
-    }
-
-    // Manager whose live counts read a simulated fleet counter that launches grow.
-    private Manager fleetAwareManager(final String id, final List<Integer> launchCounts,
-            final AtomicInteger fleetWorkers, final int managerCount) {
-        return new Manager(id, 10, 2) {
-            @Override
-            protected int liveWorkerCount() {
-                return fleetWorkers.get();
-            }
-
-            @Override
-            protected int liveInstanceCount() {
-                return fleetWorkers.get() + managerCount;
-            }
-
-            @Override
-            protected List<String> launchWorkerInstances(int count) {
-                launchCounts.add(count);
-                fleetWorkers.addAndGet(count);
-                List<String> ids = new ArrayList<String>();
-                for (int i = 0; i < count; i++) {
-                    ids.add(id + "-worker-" + i);
-                }
-                return ids;
-            }
-        };
     }
 
     @Test
@@ -1017,13 +833,6 @@ public class ManagerTest {
             }
 
             @Override
-            protected int liveWorkerCount() {
-                // The fleet count is whatever this manager still tracks, so keeping or
-                // removing the ID directly drives the replacement decision.
-                return getWorkerInstanceIds().size();
-            }
-
-            @Override
             protected int liveInstanceCount() {
                 return getWorkerInstanceIds().size() + 1; // tracked workers plus this manager
             }
@@ -1074,11 +883,6 @@ public class ManagerTest {
             @Override
             protected Map<String, String> workerStates(Collection<String> instanceIds) {
                 return states;
-            }
-
-            @Override
-            protected int liveWorkerCount() {
-                return 0;
             }
 
             @Override
@@ -1182,11 +986,6 @@ public class ManagerTest {
             protected List<String> launchWorkerInstances(int count) {
                 launchCounts.add(count);
                 return Collections.<String>emptyList();
-            }
-
-            @Override
-            protected int liveWorkerCount() {
-                return 0;
             }
 
             @Override
