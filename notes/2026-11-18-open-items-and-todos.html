@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PR #3 merge — open items</title>
+<title>Open items and TODOs</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -33,8 +33,8 @@
   p { margin: 0 0 .9rem; }
   code { font: .86em/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
          background: var(--code-bg); padding: .12em .35em; border-radius: 4px; }
-  ul.plain { padding-left: 1.15rem; margin: .25rem 0 .9rem; }
-  ul.plain li { margin-bottom: .6rem; }
+  ul.plain, ol.plain { padding-left: 1.15rem; margin: .25rem 0 .9rem; }
+  ul.plain li, ol.plain li { margin-bottom: .6rem; }
   hr { border: 0; border-top: 1px solid var(--rule); margin: 2rem 0; }
   footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule);
            color: var(--muted); font-size: .82rem; }
@@ -45,44 +45,39 @@
   <header>
     <h1>Open items and TODOs</h1>
     <div class="meta">
-      <span>2026-11-18, re-audited 2026-11-20</span>
-      <span>Baseline <code>2f7fe2d</code> + working tree</span>
+      <span>2026-11-18, re-audited 2026-11-21</span>
+      <span>Baseline HEAD <code>89702bf</code> + working tree</span>
       <span>Source of truth: <code>Assignment 1.pdf</code></span>
     </div>
   </header>
 
-<p>HEAD compiles and <code>mvn -o test</code> passes (53 tests). The following items remain open, and the assignment is not yet ready for submission.</p>
+<p>HEAD and the working tree compile and <code>mvn -o test</code> passes (58 tests, 1 skipped). Everything the earlier audit listed as fixed — argument passing, the capacity-aware manager, the S3 summary upload/download, HTML generation, worker bootstrap, the SQS visibility timeout, and the SDK 2.57.0 BOM — has been removed. The working tree still carries uncommitted fixes to <code>Manager</code>, <code>App</code>, <code>AWS</code> and <code>Worker</code>; commit them before building the submission.</p>
 
 <h2>Open — bugs</h2>
-<ul class="plain">
-  <li><strong>Manager ignores its instance ID.</strong> <code>App.createEC2</code> passes <code>$INSTANCE_ID</code> as <code>args[2]</code>, but <code>Manager.main</code> parses only <code>args[0..1]</code> and builds itself with a random UUID. <code>setFreeSlots(managerID, …)</code> therefore tags a non-existent resource, so the <code>free</code> tag keeps the launch value forever and client-side availability is wrong. Identity decision: the EC2 instance ID is the manager identity in production (UUID only for dev/tests).</li>
-  <li><strong>Workers never download the jar.</strong> <code>Manager.launchWorkers</code> copies <code>s3://&lt;bucket&gt;/Worker.jar</code>; <code>App</code> uploads <code>assignment1/Worker.jar</code> (<code>AWS.S3_PREFIX</code>). The boot script fails and no worker runs.</li>
-  <li><strong>Instance cap is 20, not 19.</strong> <code>Manager.MAX_INSTANCES = 20</code>; the PDF says "don't run more than 19 instances", manager included.</li>
-  <li><strong>Manager never touches S3 for the summary.</strong> <code>finish()</code> writes <code>&lt;inputFileLocation&gt;.summary</code> locally (in production the input location is the S3 key, so the parent directory does not exist) and reports that path; the client downloads it from S3. The manager must download the input from S3 and upload the summary, returning the S3 key (local path only in dev).</li>
-  <li><strong>The client builds HTML from an empty file.</strong> <code>App.execute</code> creates a temp file, downloads the summary into <code>outputFileName</code>, then parses the temp file and overwrites <code>outputFileName</code> with the resulting (empty) HTML. Download into the temp path instead.</li>
-  <li><strong>A failed <code>NEW_TASK</code> hangs the client.</strong> <code>Manager.handle</code> deletes the request in <code>finally</code> even when handling threw, without replying; <code>App.await</code> polls without a timeout. Send an error <code>DONE_TASK</code>, and bound the client's wait.</li>
-  <li><strong>A worker that dies mid-message is not proven recoverable.</strong> Deletion after a successful reply exists, but no queue visibility timeout is configured and no test kills a worker between receive and delete. Set a visibility timeout longer than OCR.</li>
-  <li><strong>Offline suite reaches the network.</strong> <code>WorkerTest.realImageOcrSmokeTest</code> downloads a real image and runs OCR; it must not be part of <code>mvn -o test</code>.</li>
-  <li><strong>No AWS credentials / no real-AWS test.</strong> No <code>~/.aws</code> or <code>AWS_*</code> vars; get Learner Lab key, secret and session token (expire ~4h). Verify bucket <code>only-together2</code>, AMI <code>ami-00e95a9222311e8ed</code> (us-east-1), <code>vockey</code>, <code>LabInstanceProfile</code>. Start with a free S3/SQS smoke test, then end to end.</li>
-  <li><strong>Separate AWS integration tests.</strong> Use <code>*IT</code> tests that run only with credentials, never in <code>mvn -o test</code>; throwaway bucket/queues, clean up.</li>
-</ul>
+<ol class="plain">
+  <li><strong>The client's wait is unbounded.</strong> The manager now answers a failed <code>NEW_TASK</code> with an error <code>DONE_TASK</code>, but <code>App.requestTask</code> and <code>App.await</code> still have no deadline and the busy-retry path has no attempt cap. A lost reply or a dead manager hangs the client forever. Add a bounded wait and a retry policy.</li>
+  <li><strong>A finished client never gets its <code>TERMINATE</code> ack.</strong> The client sends <code>TERMINATE</code> after <code>DONE_TASK</code> and waits for the ack; <code>Manager.finish</code> removes the client from <code>clientTasks</code>, so <code>handleTerminate</code> sends no ack to it and the client hangs. Ack the requester even when it is no longer in <code>clientTasks</code>.</li>
+  <li><strong>Error lines are not rendered as error lines.</strong> A worker reports a failed image as <code>text = "exception: …"</code> with <code>isError = true</code>; <code>Manager.handleDoneOcr</code> stores only the text and drops the flag, while <code>App.generateHtmlFromSummary</code> only treats text starting with <code>ERROR:</code> as an error. The failed image therefore renders as an <code>&lt;img&gt;</code> plus text instead of <code>&lt;link&gt; &lt;description&gt;</code>. Prefix the summary text with <code>ERROR:</code> (or propagate the flag) and keep the client's format.</li>
+  <li><strong>Worker death recovery is only partly proven.</strong> <code>SqsQueue</code> now sets a 300 s visibility timeout on first use (so <code>AWS.createQueue</code> itself still creates with the 30 s default), and release-on-failure exists. Still missing: a real kill/expiry test (the existing test calls <code>release()</code> manually), an assertion that the 300 s value is applied, and a heartbeat for OCR that runs longer than 300 s.</li>
+  <li><strong>The "offline" suite still touches AWS.</strong> <code>WorkerTest.realImageOcrSmokeTest</code> is now <code>@Disabled</code>, but <code>ManagerTest.nonDevReadUrlsReadsFromS3</code> flips <code>Queues.setDev(false)</code> and triggers real EC2 calls (expired-credential warnings, ~50 s). Fake the AWS clients or gate that test so <code>mvn -o test</code> is clean and fast.</li>
+  <li><strong>An empty instance ID bypasses the UUID fallback.</strong> <code>App</code> reads <code>$INSTANCE_ID</code>; if the metadata call fails it passes <code>""</code>, which is length 3, so <code>Manager.main</code> skips the UUID fallback and <code>setFreeSlots</code> no-ops on an empty ID. Guard the empty value.</li>
+</ol>
 
 <h2>Open — assignment requirements</h2>
 <ul class="plain">
-  <li><strong>Manager is serial.</strong> One receive loop handles <code>NEW_TASK</code> inline (S3 read, fan-out, summary write). The PDF requires simultaneous processing of client requests: admit in the loop, submit the per-client work to a bounded executor, add an overlapping-clients test.</li>
-  <li><strong>Terminate is not a drain.</strong> <code>handleTerminate</code> clears <code>running</code>, sends <code>TERMINATE</code> to admitted clients and deletes the done-OCR queue; it does not wait for outstanding work, terminate the workers, or terminate its own instance. The PDF requires all four, with a bounded wait and forced stop as fallback.</li>
-  <li><strong>No persistence or retry model.</strong> <code>clientTasks</code> is in memory only; a restarted manager loses every admitted client, and a client never times out on a dead manager. Minimum: a per-client S3 checkpoint plus a client-side timeout/retry, keeping <code>NEW_TASK</code> idempotent.</li>
-  <li><strong>S3 lifecycle incomplete.</strong> Prefix and public-read ACL exist, but the manager does not upload, nothing deletes the prefix or the <code>manager_queue</code>/<code>worker_queue</code>, and nobody verifies the bucket and queues are empty afterwards.</li>
-  <li><strong>Worker count is untested.</strong> <code>ensureWorkers</code> uses the outstanding URL count instead of the SQS depth (equivalent here — document it), applies <code>m - k</code> and the cap, but <code>workersNeeded</code> has no unit test and the 19-instance cap is wrong.</li>
-  <li><strong>README absent</strong> (mandatory): names/ids, run instructions, design explanation, instance type/AMI, elapsed time and the <code>n</code> used, queue topology and the four message types, security notes.</li>
-  <li><strong>Submission not prepared:</strong> zip the sources/class files (without downloaded libraries) plus the output of a run on the sample input.</li>
-  <li><strong>SDK version deviates:</strong> BOM <code>2.18.16</code> vs the assignment's <code>2.57.0</code>; bump it or document the deviation in the README.</li>
-  <li><strong>Verified-run checks:</strong> 19 instances maximum and "all workers busy" with more tasks than one worker can take; confirm the AMI has <code>java</code> and <code>aws</code> (both boot scripts depend on them) and that the manager/worker instances really stop.</li>
-  <li><strong>Dead code:</strong> <code>AWS.chooseFreeManager</code> has no caller, and the sort in <code>freeManagers()</code> is unused (the client only tests emptiness).</li>
+  <li><strong>The manager is serial.</strong> <code>Manager.run</code> handles <code>NEW_TASK</code> inline in one thread (S3 read, fan-out, summary write) and only polls done-OCR after the request batch. The PDF requires simultaneous processing of client requests: admit in the loop, submit per-client work to a bounded executor, and add an overlapping-clients test.</li>
+  <li><strong>Terminate is not a drain.</strong> <code>handleTerminate</code> clears <code>running</code>, sends <code>TERMINATE</code> to admitted clients, deletes the done-OCR queue immediately and still runs the current batch; it does not wait for outstanding OCR, send outstanding summaries, terminate the workers, or terminate its own instance. The PDF requires all four, with a bounded wait and a forced stop as fallback. (The missing ack for a finished client is bug 2.)</li>
+  <li><strong>No persistence or restart model.</strong> <code>clientTasks</code> is an in-memory map; a restarted manager loses every admitted client and ignores their later <code>DONE_OCR</code>. <code>NEW_TASK</code> is idempotent only while the client is live. Add a per-client S3 checkpoint and reload path, and keep <code>NEW_TASK</code> idempotent across restarts. (The client-side timeout is bug 1.)</li>
+  <li><strong>S3/queue lifecycle is incomplete.</strong> The manager now uploads summaries, but nothing deletes the <code>assignment1/</code> prefix or the shared <code>manager_queue</code>/<code>worker_queue</code>; only the done-OCR queue is deleted on shutdown. Add S3 list/delete helpers and verify the bucket and queues are empty after a run.</li>
+  <li><strong><code>ensureWorkers</code> is untested and sizes from the outstanding count.</strong> <code>workersNeeded</code> is unit-tested, but <code>ensureWorkers</code> has no test and uses the outstanding URL count instead of the SQS depth. That is equivalent here, but the javadoc does not say so. Add a test and the note.</li>
+  <li><strong>README is absent</strong> (mandatory): names/ids, run instructions, design explanation, instance type/AMI, elapsed time and the <code>n</code> used, queue topology and the four message types, security notes.</li>
+  <li><strong>The submission is not prepared:</strong> zip the sources and class files (without downloaded libraries) plus the output of a run on the sample input.</li>
+  <li><strong>Real-AWS verification is pending.</strong> The credentials file exists but the session token is expired. Refresh the Learner Lab credentials (~4 h), confirm bucket <code>only-together2</code>, AMI <code>ami-00e95a9222311e8ed</code> (us-east-1), key pair <code>vockey</code> and <code>LabInstanceProfile</code>, then run <code>AwsIntegrationIT</code> and the end-to-end sample. Document the 19-instance maximum, "all workers busy" with more tasks than one worker can take, that the AMI has <code>java</code> and <code>aws</code>, and that the manager/worker instances really stop. <code>Manager.MAX_INSTANCES</code> is 19, but its javadoc still says 20.</li>
+  <li><strong>Dead code:</strong> <code>FreeSlotTags.chooseFreeManager</code> has no production caller (only tests), and the sort in <code>AWS.freeManagers()</code> has no consumer (the client only tests emptiness).</li>
 </ul>
 
 <footer>
-  Markdown source: <code>docs/superpowers/plans/2026-11-18-open-items-and-todos.md</code>
+  Markdown source: <code>notes/2026-11-18-open-items-and-todos.md</code>
 </footer>
 </main>
 </body>
