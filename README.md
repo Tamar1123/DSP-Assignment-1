@@ -131,3 +131,6 @@ cleans up the instances, queues and S3 objects afterwards.
 **Separation of duties.** LocalApp: upload, request, render HTML. Manager: admission, split, scale workers, aggregate, summarise, terminate; never OCRs. Worker: download + OCR + report only.
 
 **Distributed.** Components communicate only through queues and S3, so none waits on another being ready and each can be restarted. The only unavoidable wait is the client waiting for its own `DONE_TASK`.
+
+
+**Measured run (1 client, 1 manager, `worker-files-n=2`):** `manager-clients-n=1`, `worker-files-n=2`, 3 sample URLs (`head -3 codeExamples/inputExample.txt`), `terminate -D` took **4m 13.930s** total wall time (`NEW_TASK` at `23:04:39` to `DONE_TASK` at `23:08:24`), generating `/tmp/bench-out.html`.
