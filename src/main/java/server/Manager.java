@@ -4,21 +4,13 @@ import utils.Message;
 import utils.Queue;
 import utils.Queues;
 import utils.Received;
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
 import java.io.IOException;
-import java.io.PrintWriter;
-import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 // Routes client work to workers and answers each client once its images are OCRed.
 // Two threads: the main Router receives and admits, one IoWorker does all blocking calls.
@@ -588,6 +580,4 @@ public class Manager implements Runnable {
             System.out.println("[DEBUG] " + message);
         }
     }
-
-    // Per-client work while its images are OCRed.
 }
