@@ -60,6 +60,11 @@ class WorkerOrchestrator {
 
     // ceil(urlCount / workerFilesN) workers, minus this manager's own workers, bounded by the
     // fleet headroom. ownWorkers and liveInstances are counts, not booleans.
+    //
+    // The headroom check is best effort, not a reservation: managers read liveInstances
+    // independently, so simultaneous launches can transiently exceed MAX_INSTANCES. This is an
+    // accepted risk; the lab script's enforce_cap remains the hard stop, and no distributed lock
+    // is added for it.
     static int workersToLaunch(int urlCount, int workerFilesN, int ownWorkers, int liveInstances) {
         if (urlCount <= 0) {
             return 0;
