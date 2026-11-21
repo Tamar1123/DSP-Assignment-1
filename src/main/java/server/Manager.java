@@ -1,5 +1,4 @@
 package server;
-
 import utils.AWS;
 import utils.Message;
 import utils.Queue;
@@ -16,10 +15,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The manager: routes client work to the shared worker queue and answers each client once
@@ -27,7 +24,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * The manager runs exactly two threads. The main thread is the {@link #routerTick() Router}:
  * it only receives messages, updates shared state and enqueues work — it never touches S3 or
- * EC2. The single {@link #ioWorkerLoop() IoWorker} thread does every blocking call: reading
+ * EC2. The single {@link IoWorker} thread does every blocking call: reading
  * input files, sending image tasks, bootstrapping workers, writing summaries and answering
  * clients. Jobs sit in one priority queue in which finishes outrank fan-outs, so a completed
  * client is never held up by another client's fan-out.
@@ -64,11 +61,8 @@ public class Manager implements Runnable {
     private final AtomicInteger servedClients = new AtomicInteger(); //cumulative, incremented at finish.
     private final AtomicInteger rejectedClients = new AtomicInteger(); //cumulative, busy replies sent.
 
-    /**
-     * IoWorker jobs in priority order: finishes (0) before fan-outs (1), FIFO within a
-     * priority. The IoWorker thread takes from it; tests may drain it synchronously instead.
-     */
-    private final PriorityBlockingQueue<IoJob> ioJobs = new PriorityBlockingQueue<IoJob>();
+    /** Runs every blocking job, finishes before fan-outs, on one thread. */
+    private final IoWorker ioWorker;
 
     private volatile boolean running = true;
 
@@ -89,6 +83,7 @@ public class Manager implements Runnable {
             throw new IllegalArgumentException("worker-files-n must be at least 1, got " + tasksPerWorker);
         }
         this.managerID = managerID;
+        this.ioWorker = new IoWorker("manager-io-worker-" + managerID);
         this.maxClients = maxClients;
         this.workerFilesN = tasksPerWorker;
         this.managerQueue = Queues.get(Queues.managerQueueName());
@@ -156,10 +151,7 @@ public class Manager implements Runnable {
 
     /** Runs every pending IoWorker job inline, finishes before fan-outs. Test seam. */
     public void runPendingIo() {
-        IoJob job;
-        while ((job = ioJobs.poll()) != null) {
-            runJob(job);
-        }
+        ioWorker.runAll();
     }
 
     /**
@@ -168,12 +160,7 @@ public class Manager implements Runnable {
      * drives the router. Returns true when a job ran.
      */
     public boolean runOnePendingJob() {
-        IoJob job = ioJobs.poll();
-        if (job == null) {
-            return false;
-        }
-        runJob(job);
-        return true;
+        return ioWorker.runOne();
     }
 
     /**
@@ -182,13 +169,7 @@ public class Manager implements Runnable {
      * fan-out; tests call it directly to prove that ordering.
      */
     public void runPendingFinishes() {
-        IoJob job;
-        while ((job = ioJobs.peek()) != null && job.priority() == IoJob.FINISH) {
-            if (ioJobs.poll() != job) {
-                break; // another consumer took the head job
-            }
-            runJob(job);
-        }
+        ioWorker.runPendingFinishes();
     }
 
     /**
@@ -252,12 +233,6 @@ public class Manager implements Runnable {
 
     @Override
     public void run() {
-        Thread ioWorker = new Thread(new Runnable() {
-            public void run() {
-                ioWorkerLoop();
-            }
-        }, "manager-io-worker-" + managerID);
-        ioWorker.setDaemon(true);
         ioWorker.start();
         try {
             while (running) {
@@ -270,32 +245,7 @@ public class Manager implements Runnable {
             }
         } finally {
             // Graceful stop: the IoWorker drains the jobs that are queued, then exits.
-            ioJobs.add(STOP);
-        }
-    }
-
-    /** The single IoWorker thread: take the highest-priority job and run it, until stopped. */
-    private void ioWorkerLoop() {
-        while (true) {
-            IoJob job;
-            try {
-                job = ioJobs.take();
-            } catch (InterruptedException e) {
-                return;
-            }
-            if (job == STOP) {
-                return;
-            }
-            runJob(job);
-        }
-    }
-
-    private void runJob(IoJob job) {
-        try {
-            job.run();
-        } catch (Exception e) {
-            // One bad job must not kill the IoWorker; the job itself reports failures to the client.
-            System.err.println("[MANAGER] io job failed: " + e.getMessage());
+            ioWorker.stopAfterDrain();
         }
     }
 
@@ -369,7 +319,7 @@ public class Manager implements Runnable {
         }
         ClientTask task = new ClientTask(localAppID, msg.getInputFileLocation());
         clientTasks.put(localAppID, task);
-        ioJobs.add(new FanOutJob(task));
+        ioWorker.submit(new FanOutJob(task));
         logDebug("admitted client " + localAppID);
     }
 
@@ -385,7 +335,7 @@ public class Manager implements Runnable {
         // redelivery cannot be told apart from a second identical-URL task.
         task.texts.putIfAbsent(msg.getImageURL(), msg.getIdentifiedText());
         if (task.outstanding.decrementAndGet() <= 0) {
-            ioJobs.add(new FinishJob(task));
+            ioWorker.submit(new FinishJob(task));
         }
     }
 
@@ -586,53 +536,16 @@ public class Manager implements Runnable {
     }
 
     /**
-     * A unit of blocking work for the IoWorker. Finishes have the higher priority, so an
-     * answerable client is never queued behind another client's fan-out; jobs of one priority
-     * keep their submission order.
-     */
-    abstract static class IoJob implements Runnable, Comparable<IoJob> {
-        static final int FINISH = 0;
-        static final int FAN_OUT = 1;
-        static final int STOP = Integer.MAX_VALUE;
-
-        private static final AtomicLong SEQUENCE = new AtomicLong();
-
-        private final int priority;
-        private final long sequence = SEQUENCE.getAndIncrement();
-
-        IoJob(int priority) {
-            this.priority = priority;
-        }
-
-        int priority() {
-            return priority;
-        }
-
-        @Override
-        public int compareTo(IoJob other) {
-            int byPriority = Integer.compare(priority, other.priority);
-            return byPriority != 0 ? byPriority : Long.compare(sequence, other.sequence);
-        }
-    }
-
-    /** Poisons the IoWorker loop so {@link #run()} can stop it after a graceful drain. */
-    private static final IoJob STOP = new IoJob(IoJob.STOP) {
-        @Override
-        public void run() {
-        }
-    };
-
-    /**
      * Reads the input file once, records the immutable URL list, sends one NEW_IMAGE_TASK per
      * URL in batches of ten — running pending finishes between batches — and then boots the
      * workers. An empty input finishes the client at once. A failure here removes the task,
      * frees the slot and answers the client with an error.
      */
-    private final class FanOutJob extends IoJob {
+    private final class FanOutJob extends IoWorker.Job {
         private final ClientTask task;
 
         FanOutJob(ClientTask task) {
-            super(IoJob.FAN_OUT);
+            super(IoWorker.FAN_OUT);
             this.task = task;
         }
 
@@ -656,7 +569,7 @@ public class Manager implements Runnable {
                 }
                 logDebug("admitted client " + task.localAppID + " with " + urls.size() + " images");
                 if (urls.isEmpty()) {
-                    ioJobs.add(new FinishJob(task)); // empty input finishes at once
+                    ioWorker.submit(new FinishJob(task)); // empty input finishes at once
                 }
                 ensureWorkers(totalOutstanding());
             } catch (Exception e) {
@@ -671,11 +584,11 @@ public class Manager implements Runnable {
      * client (with an error), still frees the slot and still runs only once — the CAS on
      * {@code done} makes finish idempotent.
      */
-    private final class FinishJob extends IoJob {
+    private final class FinishJob extends IoWorker.Job {
         private final ClientTask task;
 
         FinishJob(ClientTask task) {
-            super(IoJob.FINISH);
+            super(IoWorker.FINISH);
             this.task = task;
         }
 
