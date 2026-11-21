@@ -346,14 +346,16 @@ public class Manager implements Runnable {
     }
 
     /**
-     * Completes termination once every admitted client has its answer: ack the requester (even
-     * if it already finished and left clientTasks), drop the done-OCR queue, and stop the loop.
+     * Completes termination once every admitted client has its answer: stop this manager's own
+     * workers, drop the done-OCR queue, ack the requester (even if it already finished and left
+     * clientTasks), and stop the loop.
      */
     private void finishTerminationIfDrained() {
         if (!running || !terminating.get() || !clientTasks.isEmpty()) {
             return;
         }
         running = false;
+        stopWorkers();
         deleteDoneOcrQueueIfAws();
         String requester = terminateRequester;
         if (requester == null) {
@@ -521,8 +523,26 @@ public class Manager implements Runnable {
         return urls;
     }
 
+    /** Stops this manager's workers after the client drain; never calls AWS in dev mode. */
+    private void stopWorkers() {
+        if (Queues.isDev()) {
+            return;
+        }
+        try {
+            terminateWorkersOf(managerID);
+        } catch (Exception e) {
+            // Worker shutdown is best effort and must not prevent the terminate acknowledgement.
+            System.err.println("[MANAGER] could not stop workers: " + e.getMessage());
+        }
+    }
+
+    /** Delegates worker termination to AWS; protected so termination can be tested offline. */
+    protected void terminateWorkersOf(String managerID) {
+        AWS.getInstance().terminateWorkersOf(managerID);
+    }
+
     /** Deletes the per-manager done-OCR queue in AWS mode; a no-op in dev. */
-    private void deleteDoneOcrQueueIfAws() {
+    protected void deleteDoneOcrQueueIfAws() {
         if (Queues.isDev()) {
             return;
         }

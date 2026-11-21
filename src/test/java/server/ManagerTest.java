@@ -150,6 +150,49 @@ public class ManagerTest {
     }
 
     @Test
+    public void terminationStopsWorkersLaunchedByThisManager() {
+        final List<String> terminatedManagers = new ArrayList<String>();
+        Manager m = new Manager("mgr-termination") {
+            @Override
+            protected void terminateWorkersOf(String managerID) {
+                terminatedManagers.add(managerID);
+            }
+
+            @Override
+            protected void deleteDoneOcrQueueIfAws() {
+                // Keep this offline test focused on worker termination.
+            }
+        };
+        Queue managerQueue = Queues.get(Queues.managerQueueName());
+        Queues.register(Queues.clientQueueName("app-termination"), new InMemoryQueue());
+        Queues.setDev(false);
+        try {
+            managerQueue.send(Message.createTerminate("app-termination"));
+            m.startOnce();
+
+            assertEquals(Arrays.asList("mgr-termination"), terminatedManagers);
+            assertFalse(m.isRunning());
+        } finally {
+            Queues.setDev(true);
+        }
+    }
+
+    @Test
+    public void devModeDoesNotAttemptWorkerTermination() {
+        final List<String> terminatedManagers = new ArrayList<String>();
+        Manager m = new Manager("mgr-dev-termination") {
+            @Override
+            protected void terminateWorkersOf(String managerID) {
+                terminatedManagers.add(managerID);
+            }
+        };
+        Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-dev-termination"));
+        m.startOnce();
+
+        assertTrue(terminatedManagers.isEmpty(), "dev mode must not reach the AWS operation");
+    }
+
+    @Test
     public void terminateIsIdempotent() throws Exception {
         Manager m = new Manager("mgr-14");
         Queues.get(Queues.managerQueueName()).send(Message.createTerminate("app-14"));
