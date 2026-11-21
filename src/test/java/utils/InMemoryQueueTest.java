@@ -17,6 +17,21 @@ public class InMemoryQueueTest {
     }
 
     @Test
+    public void sendAllEnqueuesMessagesInInputOrder() {
+        Queue q = new InMemoryQueue();
+        q.sendAll(java.util.Arrays.asList(
+                Message.createNewImageTask("a", "app-1", "manager-1"),
+                Message.createNewImageTask("b", "app-1", "manager-1"),
+                Message.createNewImageTask("c", "app-1", "manager-1")));
+
+        List<Received> got = q.receive(3, 0);
+        assertEquals(3, got.size());
+        assertEquals("a", got.get(0).getMessage().getImageURL());
+        assertEquals("b", got.get(1).getMessage().getImageURL());
+        assertEquals("c", got.get(2).getMessage().getImageURL());
+    }
+
+    @Test
     public void receiveOnEmptyQueueReturnsEmptyListAndDoesNotBlock() {
         Queue q = new InMemoryQueue();
         long start = System.currentTimeMillis();

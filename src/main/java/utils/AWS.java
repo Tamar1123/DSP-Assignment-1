@@ -1,5 +1,6 @@
 package utils;
 
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.ec2.Ec2Client;
@@ -16,6 +17,7 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -30,9 +32,32 @@ public class AWS {
     public static Region region2 = Region.US_EAST_1;
 
     private AWS() {
-        s3 = S3Client.builder().region(region1).httpClientBuilder(UrlConnectionHttpClient.builder()).build();
-        sqs = SqsClient.builder().region(region1).httpClientBuilder(UrlConnectionHttpClient.builder()).build();
-        ec2 = Ec2Client.builder().region(region2).httpClientBuilder(UrlConnectionHttpClient.builder()).build();
+        s3 = S3Client.builder().region(region1)
+                .httpClientBuilder(UrlConnectionHttpClient.builder()
+                        .connectionTimeout(Duration.ofSeconds(10))
+                        .socketTimeout(Duration.ofSeconds(30)))
+                .overrideConfiguration(ClientOverrideConfiguration.builder()
+                        .apiCallTimeout(Duration.ofSeconds(60))
+                        .build())
+                .build();
+        // ReceiveMessage may long-poll for up to 20 seconds; keep both transport and
+        // whole-call timeouts comfortably above that wait.
+        sqs = SqsClient.builder().region(region1)
+                .httpClientBuilder(UrlConnectionHttpClient.builder()
+                        .connectionTimeout(Duration.ofSeconds(10))
+                        .socketTimeout(Duration.ofSeconds(30)))
+                .overrideConfiguration(ClientOverrideConfiguration.builder()
+                        .apiCallTimeout(Duration.ofSeconds(45))
+                        .build())
+                .build();
+        ec2 = Ec2Client.builder().region(region2)
+                .httpClientBuilder(UrlConnectionHttpClient.builder()
+                        .connectionTimeout(Duration.ofSeconds(10))
+                        .socketTimeout(Duration.ofSeconds(30)))
+                .overrideConfiguration(ClientOverrideConfiguration.builder()
+                        .apiCallTimeout(Duration.ofSeconds(60))
+                        .build())
+                .build();
     }
 
 

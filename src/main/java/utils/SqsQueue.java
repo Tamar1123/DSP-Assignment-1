@@ -5,6 +5,9 @@ import software.amazon.awssdk.services.sqs.model.ChangeMessageVisibilityRequest;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageResponse;
+import software.amazon.awssdk.services.sqs.model.SendMessageBatchRequest;
+import software.amazon.awssdk.services.sqs.model.SendMessageBatchRequestEntry;
+import software.amazon.awssdk.services.sqs.model.SendMessageBatchResponse;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -26,6 +29,43 @@ public class SqsQueue implements Queue {
     @Override
     public void send(Message msg) {
         sqs().sendMessage(b -> b.queueUrl(url()).messageBody(msg.toJson()));
+    }
+
+    @Override
+    public void sendAll(List<Message> messages) {
+        int offset = 0;
+        for (List<Message> chunk : chunkMessages(messages)) {
+            List<SendMessageBatchRequestEntry> entries = new ArrayList<SendMessageBatchRequestEntry>();
+            for (int i = 0; i < chunk.size(); i++) {
+                entries.add(SendMessageBatchRequestEntry.builder()
+                        .id("entry-" + (offset + i))
+                        .messageBody(chunk.get(i).toJson())
+                        .build());
+            }
+
+            SendMessageBatchResponse response = sqs().sendMessageBatch(SendMessageBatchRequest.builder()
+                    .queueUrl(url())
+                    .entries(entries)
+                    .build());
+            if (!response.failed().isEmpty()) {
+                List<String> failedIds = new ArrayList<String>();
+                for (software.amazon.awssdk.services.sqs.model.BatchResultErrorEntry failed : response.failed()) {
+                    failedIds.add(failed.id());
+                }
+                throw new RuntimeException("Failed to send SQS batch entries: " + failedIds);
+            }
+            offset += chunk.size();
+        }
+    }
+
+    /** Splits messages into ordered batches accepted by SQS sendMessageBatch. */
+    static List<List<Message>> chunkMessages(List<Message> messages) {
+        List<List<Message>> chunks = new ArrayList<List<Message>>();
+        for (int start = 0; start < messages.size(); start += 10) {
+            int end = Math.min(start + 10, messages.size());
+            chunks.add(new ArrayList<Message>(messages.subList(start, end)));
+        }
+        return chunks;
     }
 
     @Override
