@@ -18,6 +18,9 @@ final class ClientTask {
     final AtomicBoolean done = new AtomicBoolean(false);
     // Input order, set before the first image task is sent.
     volatile List<String> urls = Collections.emptyList();
+    // Remaining expected OCR results per URL; populated before fan-out.
+    final ConcurrentHashMap<String, AtomicInteger> awaiting =
+            new ConcurrentHashMap<String, AtomicInteger>();
 
     ClientTask(String localAppID, String inputFileLocation) {
         this.localAppID = localAppID;

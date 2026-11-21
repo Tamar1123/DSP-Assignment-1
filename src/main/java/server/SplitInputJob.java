@@ -5,6 +5,7 @@ import utils.Queues;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 // Reads the input, sends image tasks in batches, drains finishes between batches.
 final class SplitInputJob extends IoWorker.Job {
@@ -24,6 +25,14 @@ final class SplitInputJob extends IoWorker.Job {
             m.updateFreeSlots(); // advertise capacity at admission, before the URLs fan out
             List<String> urls = Collections.unmodifiableList(m.readUrls(task.inputFileLocation));
             task.urls = urls;
+            for (String url : urls) {
+                task.awaiting.computeIfAbsent(url, new java.util.function.Function<String, AtomicInteger>() {
+                    @Override
+                    public AtomicInteger apply(String k) {
+                        return new AtomicInteger(0);
+                    }
+                }).incrementAndGet();
+            }
             task.outstanding.set(urls.size());
             List<Message> batch = new ArrayList<Message>(IMAGE_TASK_BATCH);
             for (String url : urls) {

@@ -135,27 +135,19 @@ public class EndToEndTest {
             managerQueue.release(secondTask);
             manager.startOnce();
             assertEquals(1, manager.getActiveClients());
-            assertEquals(1, manager.getRejectedClients(), "second client was not requeued");
-
-            // The requeue is the manager's doing: the request is back on manager_queue while the
-            // second client's inbox is still empty — no busy DONE_TASK was sent.
-            Received requeued = managerQueue.receive(1, 5).get(0);
-            assertEquals(secondClientID, requeued.getMessage().getLocalAppID());
-            assertEquals(secondInput.getAbsolutePath(), requeued.getMessage().getInputFileLocation());
+            assertEquals(0, manager.getRejectedClients(),
+                    "gated polling must not pull and reject a second client when full");
             assertTrue(Queues.get(Queues.clientQueueName(secondClientID)).receive(1, 0).isEmpty(),
-                    "a full manager must requeue, not answer busy");
-            assertEquals(2, directoryLookups.size(),
-                    "one lookup per send: the requeue is manager-side, the client does not resend");
+                    "second client must not receive a busy reply");
+            assertEquals(2, directoryLookups.size());
 
             worker.startOnce();
             manager.startOnce(); // done-OCR is processed although the request queue is gated
             assertEquals(0, manager.getActiveClients(), "first completion did not free the slot");
             assertNotNull(firstSummary.get(5, TimeUnit.SECONDS));
 
-            // Hold the requeue until the slot is free, so it is admitted exactly once and the
-            // rejection count stays at the single requeue.
-            managerQueue.release(requeued);
-            manager.startOnce(); // now the requeued request is admitted into the freed slot
+            // Now a slot is free: the next manager tick polls and admits the waiting second request.
+            manager.startOnce();
             assertEquals(1, manager.getActiveClients());
             worker.startOnce();
             manager.startOnce();

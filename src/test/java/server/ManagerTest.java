@@ -611,6 +611,37 @@ public class ManagerTest {
     }
 
     @Test
+    public void duplicateResultForOneUrlDoesNotCompleteBeforeAnotherUrl() throws Exception {
+        String in = inputFile("http://a", "http://b");
+        Manager m = new Manager("mgr-dup-url", 1, 5);
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-dup-url"));
+        m.startOnce();
+        assertEquals(2, Queues.get(Queues.workerQueueName()).receive(10, 1).size());
+
+        Queue doneOcr = Queues.get(Queues.doneOcrQueueName("mgr-dup-url"));
+        doneOcr.send(Message.createDoneOCR("http://a", "text-a", "app-dup-url"));
+        doneOcr.send(Message.createDoneOCR("http://a", "text-a-dup", "app-dup-url"));
+        m.startOnce();
+
+        assertTrue(Queues.get(Queues.clientQueueName("app-dup-url")).receive(1, 1).isEmpty(),
+                "duplicate result for URL A must not complete before URL B arrives");
+        assertEquals(1, m.getActiveClients());
+
+        doneOcr.send(Message.createDoneOCR("http://b", "text-b", "app-dup-url"));
+        m.startOnce();
+
+        List<Received> replies = Queues.get(Queues.clientQueueName("app-dup-url")).receive(10, 1);
+        assertEquals(1, replies.size());
+        assertEquals(Message.MessageType.DONE_TASK, replies.get(0).getMessage().getType());
+
+        Scanner scanner = new Scanner(new File(in + ".summary"));
+        String summary = scanner.useDelimiter("\\A").next();
+        scanner.close();
+        assertTrue(summary.contains("text-a"));
+        assertTrue(summary.contains("text-b"));
+    }
+
+    @Test
     public void duplicateNewTaskIsOneEntryAndNotRequeued() throws Exception {
         String in = inputFile("http://a", "http://b");
         Manager m = new Manager("mgr-11", 2, 5);
@@ -786,7 +817,7 @@ public class ManagerTest {
         m.routerTick(); // admits B
         assertTrue(m.runOnePendingJob(), "B's fan-out should run while A is stuck");
         Queues.get(Queues.doneOcrQueueName("mgr-slow"))
-                .send(Message.createDoneOCR("http://b", "text-b", "app-slow-b"));
+                .send(Message.createDoneOCR("http://a", "text-b", "app-slow-b"));
         m.routerTick(); // handles B's result and queues its finish
         assertTrue(m.runOnePendingJob(), "B's finish should run while A is stuck");
         assertEquals(1, Queues.get(Queues.clientQueueName("app-slow-b")).receive(1, 1).size());
