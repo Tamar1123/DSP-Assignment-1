@@ -23,7 +23,7 @@ public class IoWorkerTest {
     public void finishesRunBeforeFanOuts() {
         List<String> events = new ArrayList<String>();
         IoWorker worker = new IoWorker("test-io");
-        worker.submit(job(events, "fan", IoWorker.FAN_OUT));
+        worker.submit(job(events, "fan", IoWorker.DISPATCH));
         worker.submit(job(events, "finish", IoWorker.FINISH));
 
         worker.runAll();
@@ -35,8 +35,8 @@ public class IoWorkerTest {
     public void samePriorityKeepsSubmissionOrder() {
         List<String> events = new ArrayList<String>();
         IoWorker worker = new IoWorker("test-io");
-        worker.submit(job(events, "first", IoWorker.FAN_OUT));
-        worker.submit(job(events, "second", IoWorker.FAN_OUT));
+        worker.submit(job(events, "first", IoWorker.DISPATCH));
+        worker.submit(job(events, "second", IoWorker.DISPATCH));
 
         worker.runAll();
 
@@ -47,7 +47,7 @@ public class IoWorkerTest {
     public void runPendingFinishesLeavesFanOutsQueued() {
         List<String> events = new ArrayList<String>();
         IoWorker worker = new IoWorker("test-io");
-        worker.submit(job(events, "fan", IoWorker.FAN_OUT));
+        worker.submit(job(events, "fan", IoWorker.DISPATCH));
         worker.submit(job(events, "finish", IoWorker.FINISH));
 
         worker.runPendingFinishes();

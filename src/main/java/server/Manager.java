@@ -675,7 +675,7 @@ public class Manager implements Runnable {
         private final ClientTask task;
 
         SplitInputJob(ClientTask task) {
-            super(IoWorker.FAN_OUT);
+            super(IoWorker.DISPATCH);
             this.task = task;
         }
 
