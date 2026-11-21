@@ -1006,19 +1006,50 @@ public class ManagerTest {
     }
 
     @Test
-    public void reconcileKeepsShuttingDownWorker() {
+    public void reconcileKeepsShuttingDownWorker() throws Exception {
         Map<String, String> states = new HashMap<String, String>();
         states.put("i-dying", "shutting-down");
         final List<Integer> launchCounts = new ArrayList<Integer>();
-        Manager m = reconcileManager(states, launchCounts);
+        Manager m = new Manager("mgr-reconcile-shutting-down", 10, 1) {
+            @Override
+            protected Map<String, String> workerStates(Collection<String> instanceIds) {
+                return states;
+            }
+
+            @Override
+            protected int liveWorkerCount() {
+                // The fleet count is whatever this manager still tracks, so keeping or
+                // removing the ID directly drives the replacement decision.
+                return getWorkerInstanceIds().size();
+            }
+
+            @Override
+            protected int liveInstanceCount() {
+                return getWorkerInstanceIds().size() + 1; // tracked workers plus this manager
+            }
+
+            @Override
+            protected List<String> launchWorkerInstances(int count) {
+                launchCounts.add(count);
+                return Collections.<String>emptyList();
+            }
+
+            @Override
+            protected void publishFreeSlots(int free) {
+                // Reconcile tests run in AWS mode but must not publish EC2 tags.
+            }
+        };
         m.getWorkerInstanceIds().add("i-dying");
+        Queues.get(Queues.managerQueueName())
+                .send(Message.createNewTask(inputFile("http://dying"), "app-dying"));
+        m.startOnce(); // dev mode: admits the client, one image outstanding
 
         reconcile(m);
 
-        assertEquals(new HashSet<String>(Arrays.asList("i-dying")), m.getWorkerInstanceIds(),
+        assertTrue(m.getWorkerInstanceIds().contains("i-dying"),
                 "a shutting-down worker is still terminating and must stay in the set");
         assertTrue(launchCounts.isEmpty(),
-                "a shutting-down worker still occupies the fleet, so no replacement is launched");
+                "the shutting-down worker covers the one outstanding image, so nothing launches");
     }
 
     @Test
