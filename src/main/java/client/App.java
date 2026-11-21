@@ -149,7 +149,16 @@ public class App {
                                ManagerDirectory directory, String fileLocationToSend) {
         while (true) {
             sendNewTask(managerQueue, localAppID, directory, fileLocationToSend);
-            Message reply = await(inbox, inboxName, Message.MessageType.DONE_TASK);
+            Message reply;
+        try {
+            reply = await(inbox, inboxName, Message.MessageType.DONE_TASK, directory);
+        } catch (ManagerLostException e) {
+            if (debug) {
+                System.out.println("[DEBUG] " + e.getMessage() + ", re-ensuring manager and resending " + localAppID);
+            }
+            pauseBeforeRetry();
+            continue;
+        }
             if (!reply.isError()) {
                 return reply;
             }
@@ -161,6 +170,10 @@ public class App {
                 System.out.println("[DEBUG] Manager busy, retrying " + localAppID);
             pauseBeforeRetry();
         }
+    }
+
+    private static Message await(Queue inbox, String queueName, Message.MessageType expected) {
+        return await(inbox, queueName, expected, null);
     }
 
     /** Makes sure a manager is available, then sends the request. */
@@ -191,7 +204,7 @@ public class App {
     }
 
     /** Polls {@code inbox} until a message of {@code expected} arrives. */
-    private static Message await(Queue inbox, String queueName, Message.MessageType expected) {
+    private static Message await(Queue inbox, String queueName, Message.MessageType expected, ManagerDirectory directory) {
         log("Waiting on queue " + queueName + " for " + expected);
         int polls = 0;
         while (true) {
@@ -199,6 +212,9 @@ public class App {
             polls++;
             if (received.isEmpty() && polls % 3 == 0) {
                 log("Still waiting on " + queueName + " for " + expected + " (" + polls + " empty/other polls)");
+                if (!Queues.isDev() && directory != null && !directory.hasLiveManager()) {
+                    throw new ManagerLostException("No live manager found while waiting for " + expected);
+                }
             }
             for (Received r : received) {
                 log("Received " + r.getMessage().getType() + " on " + queueName
@@ -259,6 +275,12 @@ static void createEC2(int freeSlots) {
         s3.putObject(putObjectRequest, RequestBody.fromFile(Paths.get(localPath)));
         System.out.println("[INFO] Uploaded " + s3Key + " to S3.");
     }
+
+    static final class ManagerLostException extends RuntimeException {
+    ManagerLostException(String message) {
+        super(message);
+    }
+}
 
     public static String uploadFileToS3(S3Client s3, String bucketName, String localFilePath, String localAppID) {
         String s3Key = AWS.S3_PREFIX + "input-files/" + localAppID + "-" + Paths.get(localFilePath).getFileName().toString();

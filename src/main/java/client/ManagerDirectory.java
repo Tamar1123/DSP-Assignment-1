@@ -24,4 +24,9 @@ interface ManagerDirectory {
         startManager(freeSlots);
         return true;
     }
+
+    /** Whether at least one manager instance is currently alive (running or pending). */
+    default boolean hasLiveManager() {
+        return true;
+    }
 }

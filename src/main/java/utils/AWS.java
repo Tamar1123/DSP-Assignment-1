@@ -26,7 +26,10 @@ public class AWS {
     private final SqsClient sqs;
     private final Ec2Client ec2;
 
+<<<<<<< HEAD
     /** Public Ubuntu 22.04 AMI (us-east-1); boot installs the JRE/AWS CLI if absent. */
+=======
+>>>>>>> 7082177 (Handle manager liveness check and resolve S3 bucket without hardcoded account ID)
     public static String ami = "ami-0e72706534bb166e3";
 
     public static Region region1 = Region.US_EAST_1;
@@ -59,8 +62,13 @@ public class AWS {
                         .apiCallTimeout(Duration.ofSeconds(60))
                         .build())
                 .build();
+        this.bucketName = resolveBucketName();
     }
 
+    /** Number of live manager instances (running or pending). */
+    public int liveManagerCount() {
+        return countLiveInstances("manager");
+    }
 
     public static AWS getInstance() {
         return InstanceHolder.INSTANCE;
@@ -69,8 +77,29 @@ public class AWS {
     private static final class InstanceHolder {
         private static final AWS INSTANCE = new AWS();
     }
+public String bucketName;
 
-    public String bucketName = "dsp1-only-together2-654654248213";
+  private String resolveBucketName() {
+      String envBucket = System.getenv("S3_BUCKET");
+      if (envBucket == null || envBucket.isBlank()) {
+          envBucket = System.getenv("AWS_BUCKET_NAME");
+      }
+      if (envBucket != null && !envBucket.isBlank()) {
+          return envBucket.trim();
+      }
+      if (s3 != null) {
+          try {
+              for (Bucket b : s3.listBuckets().buckets()) {
+                  if (b.name() != null && b.name().startsWith("dsp1-only-together2-")) {
+                      return b.name();
+                  }
+              }
+          } catch (RuntimeException ignored) {
+              // Fall back cleanly when offline or without credentials.
+          }
+      }
+      return "dsp1-only-together2";
+  }
     public static final String S3_PREFIX = "assignment1/";
 
 

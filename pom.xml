@@ -98,7 +98,6 @@
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>url-connection-client</artifactId>
         </dependency>
-
         <!-- OCR (version managed above) -->
         <dependency>
             <groupId>net.sourceforge.tess4j</groupId>

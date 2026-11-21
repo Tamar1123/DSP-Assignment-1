@@ -28,6 +28,14 @@ final class ManagerFinder implements ManagerDirectory {
     }
 
     @Override
+    public boolean hasLiveManager() {
+        if (Queues.isDev()) {
+            return true;
+        }
+        return AWS.getInstance().liveManagerCount() > 0;
+    }
+
+    @Override
     public void startManager(int freeSlots) {
         if (Queues.isDev()) {
             return;
