@@ -20,6 +20,7 @@ import java.util.HashMap;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.function.LongSupplier;
 
 public class AWS {
     private final S3Client s3;
@@ -186,7 +187,7 @@ public String bucketName;
      * EC2 tag key carrying the ID of the manager that launched the instance.
      * Workers carry it so a terminating manager can find and stop its own workers.
      */
-    public static final String MANAGER_TAG = "managerID";
+    public static final String MANAGER_TAG = WorkerTermination.MANAGER_TAG;
 
     /**
      * Pure tag set for a new instance: always {@code Name}, the free-slot hint when
@@ -293,6 +294,145 @@ public String bucketName;
             throw new IllegalStateException("Could not count live " + tagName + " instances", e);
         }
         return count;
+    }
+
+    /**
+     * Stops the running/pending workers launched by {@code managerID}, then waits up to
+     * {@link WorkerTermination#WORKER_STOP_TIMEOUT} for them to settle. Best effort: any
+     * AWS error or timeout is logged and swallowed so a terminating manager is not blocked.
+     */
+    public void terminateWorkersOf(String managerID) {
+        if (managerID == null || managerID.trim().isEmpty()) {
+            return;
+        }
+        try {
+            WorkerTermination.StopResult result = WorkerTermination.stopWorkers(
+                    managerID,
+                    ec2Ops(),
+                    WorkerTermination.WORKER_STOP_TIMEOUT,
+                    WorkerTermination.POLL_INTERVAL_MILLIS,
+                    new LongSupplier() {
+                        @Override
+                        public long getAsLong() {
+                            return System.currentTimeMillis();
+                        }
+                    },
+                    new WorkerTermination.Sleeper() {
+                        @Override
+                        public void sleep(long millis) {
+                            try {
+                                Thread.sleep(millis);
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                throw new IllegalStateException(
+                                        "interrupted while waiting for workers to stop", e);
+                            }
+                        }
+                    });
+            if (result.timedOut) {
+                System.err.println("[AWS] workers of manager " + managerID
+                        + " still stopping after " + WorkerTermination.WORKER_STOP_TIMEOUT
+                        + " ms: " + result.survivors);
+            } else if (client.App.debug) {
+                System.out.printf("[DEBUG] stopped %d worker(s) of manager %s%n",
+                        result.targeted.size(), managerID);
+            }
+        } catch (RuntimeException e) {
+            // Worker cleanup must never block the manager's own termination.
+            System.err.println("[AWS] could not stop workers of manager " + managerID
+                    + ": " + e.getMessage());
+        }
+    }
+
+    /** Adapts this singleton's EC2 client to the pure termination logic. */
+    private WorkerTermination.Ec2Ops ec2Ops() {
+        return new WorkerTermination.Ec2Ops() {
+            @Override
+            public List<WorkerTermination.InstanceRef> describeManagedInstances(String managerID) {
+                return describeWorkerInstances(managerID);
+            }
+
+            @Override
+            public void terminate(List<String> instanceIds) {
+                ec2.terminateInstances(TerminateInstancesRequest.builder()
+                        .instanceIds(instanceIds)
+                        .build());
+            }
+
+            @Override
+            public Map<String, String> states(List<String> instanceIds) {
+                return instanceStates(instanceIds);
+            }
+        };
+    }
+
+    /** Instances tagged as this manager's live workers, with plain tag maps for filtering. */
+    private List<WorkerTermination.InstanceRef> describeWorkerInstances(String managerID) {
+        List<WorkerTermination.InstanceRef> refs = new ArrayList<>();
+        String nextToken = null;
+        while (true) {
+            DescribeInstancesRequest request = DescribeInstancesRequest.builder()
+                    .filters(
+                            Filter.builder().name("tag:" + WorkerTermination.NAME_TAG)
+                                    .values(WorkerTermination.WORKER_TAG).build(),
+                            Filter.builder().name("tag:" + WorkerTermination.MANAGER_TAG)
+                                    .values(managerID).build(),
+                            Filter.builder().name("instance-state-name")
+                                    .values("running", "pending").build())
+                    .nextToken(nextToken)
+                    .build();
+            DescribeInstancesResponse response = ec2.describeInstances(request);
+            for (Reservation reservation : response.reservations()) {
+                for (Instance instance : reservation.instances()) {
+                    refs.add(toInstanceRef(instance));
+                }
+            }
+            nextToken = response.nextToken();
+            if (nextToken == null) {
+                break;
+            }
+        }
+        return refs;
+    }
+
+    /**
+     * Current state per instance ID; an ID EC2 no longer reports is simply absent, which
+     * {@link WorkerTermination#unsettled} reads as "not yet confirmed stopped" during the
+     * bounded wait (the wait stays bounded by the timeout either way).
+     * A filter (not {@code instanceIds}) keeps an unknown ID from failing the whole probe.
+     */
+    private Map<String, String> instanceStates(List<String> instanceIds) {
+        Map<String, String> states = new HashMap<>();
+        if (instanceIds == null || instanceIds.isEmpty()) {
+            return states;
+        }
+        String nextToken = null;
+        while (true) {
+            DescribeInstancesResponse response = ec2.describeInstances(DescribeInstancesRequest.builder()
+                    .filters(Filter.builder().name("instance-id").values(instanceIds).build())
+                    .nextToken(nextToken)
+                    .build());
+            for (Reservation reservation : response.reservations()) {
+                for (Instance instance : reservation.instances()) {
+                    WorkerTermination.InstanceRef ref = toInstanceRef(instance);
+                    states.put(ref.id, ref.state);
+                }
+            }
+            nextToken = response.nextToken();
+            if (nextToken == null) {
+                break;
+            }
+        }
+        return states;
+    }
+
+    private static WorkerTermination.InstanceRef toInstanceRef(Instance instance) {
+        Map<String, String> tags = new HashMap<>();
+        for (Tag tag : instance.tags()) {
+            tags.put(tag.key(), tag.value());
+        }
+        String state = instance.state() == null ? null : instance.state().nameAsString();
+        return new WorkerTermination.InstanceRef(instance.instanceId(), state, tags);
     }
 
     /** Lists running managers with a usable {@code free} tag, most free first. */
