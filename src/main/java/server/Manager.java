@@ -428,7 +428,9 @@ public class Manager implements Runnable {
     }
 
     protected void writeSummary(ClientTask task, String summaryLocation) throws IOException {
-        PrintWriter out = new PrintWriter(new File(summaryLocation));
+        // In dev mode summaryLocation is a local path; on AWS it is an S3 key, so go via a temp file.
+        File file = Queues.isDev() ? new File(summaryLocation) : File.createTempFile("manager-summary-", ".txt");
+        PrintWriter out = new PrintWriter(file);
         try {
             for (Map.Entry<String, String> entry : task.texts.entrySet()) {
                 String text = entry.getValue() == null ? "" : entry.getValue();
@@ -439,13 +441,11 @@ public class Manager implements Runnable {
             out.close();
         }
         if (!Queues.isDev()) {
-            File file = new File(summaryLocation);
-            String s3Key = AWS.S3_PREFIX + "summaries/" + task.localAppID + ".txt";
+            String s3Key = summaryLocation;
             AWS.getInstance().getS3().putObject(
                     software.amazon.awssdk.services.s3.model.PutObjectRequest.builder()
                             .bucket(AWS.getInstance().bucketName)
                             .key(s3Key)
-                            .acl(software.amazon.awssdk.services.s3.model.ObjectCannedACL.PUBLIC_READ)
                             .build(),
                     software.amazon.awssdk.core.sync.RequestBody.fromFile(file));
             file.delete();
@@ -457,6 +457,7 @@ public class Manager implements Runnable {
             // Download from S3 to a temp file, then parse.
             File tempFile = File.createTempFile("manager-input-", ".txt");
             tempFile.deleteOnExit();
+            tempFile.delete(); // the SDK refuses to overwrite an existing file
             AWS.getInstance().getS3().getObject(
                     software.amazon.awssdk.services.s3.model.GetObjectRequest.builder()
                             .bucket(AWS.getInstance().bucketName)
