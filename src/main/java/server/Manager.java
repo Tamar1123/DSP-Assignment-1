@@ -36,11 +36,8 @@ public class Manager implements Runnable {
     private static final long WORKER_RECONCILE_INTERVAL_MILLIS = 10000L;
 
     // Max EC2 instances (managers plus workers) the system may run.
-    static final int MAX_INSTANCES = 9;
+    static final int MAX_INSTANCES = WorkerOrchestrator.MAX_INSTANCES;
 
-    private static final String WORKER_TAG = "worker";
-    private static final String WORKER_JAR_KEY = AWS.S3_PREFIX + "Worker.jar";
-    private static final String WORKER_JAR_PATH = "/home/ec2-user/Worker.jar";
 
     private final String managerID;
     private final Queue managerQueue;
@@ -53,7 +50,7 @@ public class Manager implements Runnable {
     private final int workerFilesN;
 
     // Worker instance IDs this manager launched; the source of truth for its workers.
-    private final Set<String> workerInstanceIds = ConcurrentHashMap.newKeySet();
+    private final WorkerOrchestrator workers;
 
     // Admitted clients keyed by localAppID; its size is the load.
     private final Map<String, ClientTask> clientTasks = new ConcurrentHashMap<String, ClientTask>();
@@ -92,6 +89,43 @@ public class Manager implements Runnable {
         this.managerQueue = Queues.get(Queues.managerQueueName());
         this.workerQueue = Queues.get(Queues.workerQueueName());
         this.doneOcrQueue = Queues.get(Queues.doneOcrQueueName(managerID));
+        this.workers = new WorkerOrchestrator(new WorkerOrchestrator.Port() {
+            public int liveWorkerCount() {
+                return Manager.this.liveWorkerCount();
+            }
+
+            public int liveInstanceCount() {
+                return Manager.this.liveInstanceCount();
+            }
+
+            public List<String> launchWorkerInstances(int count) {
+                return Manager.this.launchWorkerInstances(count);
+            }
+
+            public void terminateInstances(List<String> ids) {
+                Manager.this.terminateInstances(ids);
+            }
+
+            public Map<String, String> workerStates(Collection<String> ids) {
+                return Manager.this.workerStates(ids);
+            }
+
+            public void ensureWorkers(int outstanding) {
+                Manager.this.ensureWorkers(outstanding);
+            }
+
+            public int totalOutstanding() {
+                return Manager.this.totalOutstanding();
+            }
+
+            public boolean isTerminating() {
+                return terminating.get();
+            }
+
+            public void log(String message) {
+                logDebug(message);
+            }
+        }, tasksPerWorker);
     }
 
     public String getManagerID() {
@@ -213,15 +247,8 @@ public class Manager implements Runnable {
         return value;
     }
 
-    // ceil(urlCount / workerFilesN); zero with no URLs.
     static int workersNeeded(int urlCount, int workerFilesN) {
-        if (workerFilesN < 1) {
-            throw new IllegalArgumentException("worker-files-n must be at least 1, got " + workerFilesN);
-        }
-        if (urlCount <= 0) {
-            return 0;
-        }
-        return (urlCount - 1) / workerFilesN + 1;
+        return WorkerOrchestrator.workersNeeded(urlCount, workerFilesN);
     }
 
     @Override
@@ -390,30 +417,8 @@ public class Manager implements Runnable {
         }
     }
 
-    // Starts the workers needed for the outstanding images, sized against the whole fleet and
-    // capped by the global instance limit.
     protected void ensureWorkers(int outstanding) {
-        if (Queues.isDev() || outstanding <= 0) {
-            return;
-        }
-        try {
-            int needed = workersNeeded(outstanding, workerFilesN);
-            int liveWorkers = liveWorkerCount();
-            int liveInstances = liveInstanceCount();
-            int toStart = Math.min(needed - liveWorkers, MAX_INSTANCES - liveInstances);
-            if (toStart <= 0) {
-                logDebug("no workers to launch: " + needed + " needed, " + liveWorkers
-                        + " live fleet-wide, instance cap at " + liveInstances + "/" + MAX_INSTANCES);
-                return;
-            }
-            List<String> launched = launchWorkers(toStart);
-            logDebug("launched " + launched.size() + " worker(s): " + outstanding + " image(s), "
-                    + workerFilesN + " per worker, " + liveWorkers + " were live fleet-wide, "
-                    + liveInstances + "/" + MAX_INSTANCES + " instances before launch");
-        } catch (Exception e) {
-            // Worker bootstrap is best effort: the manager must keep serving clients.
-            System.err.println("[MANAGER] could not launch workers: " + e.getMessage());
-        }
+        workers.ensure(outstanding);
     }
 
     // Live workers fleet-wide, all managers included; protected so tests never reach AWS.
@@ -426,47 +431,20 @@ public class Manager implements Runnable {
         return AWS.getInstance().runningInstanceCount();
     }
 
-    // Launches workers and records their IDs as this manager's workers.
     protected List<String> launchWorkers(int count) {
-        List<String> launched = launchWorkerInstances(count);
-        workerInstanceIds.addAll(launched);
-        return launched;
+        return workers.launch(count);
     }
 
     // Launches worker instances; protected so tests can supply IDs without reaching AWS.
     protected List<String> launchWorkerInstances(int count) {
-        AWS aws = AWS.getInstance();
-        return aws.createEC2Instances(workerLaunchScript(aws.bucketName), WORKER_TAG, count);
+        return workers.launchInstances(count);
     }
 
     // User-data script for one worker; package-private so tests can check it without AWS.
     String workerLaunchScript(String bucketName) {
-        return "#!/bin/bash\n"
-                + "set -e\n"
-                + "exec > >(tee -a /var/log/dsp-bootstrap.log) 2>&1\n"
-                + "mkdir -p /home/ec2-user\n"
-                + "export DEBIAN_FRONTEND=noninteractive\n"
-                // No OCR install: Tesseract, Leptonica and the trained data ship inside Worker.jar.
-                + "if ! command -v aws >/dev/null 2>&1 || ! command -v java >/dev/null 2>&1; then\n"
-                + "  apt-get update -y && apt-get install -y awscli openjdk-11-jre-headless\n"
-                + "fi\n"
-                + "aws s3 cp s3://" + bucketName + "/" + WORKER_JAR_KEY + " " + WORKER_JAR_PATH + "\n"
-                + "JAVA_BIN=$(command -v java)\n"
-                + (debug ? "touch /home/ec2-user/worker.log\n(while true; do aws s3 cp /home/ec2-user/worker.log s3://"
-                + bucketName + "/" + AWS.S3_PREFIX + "logs/worker-$(hostname).log --quiet; sleep 5; done) &\n" : "")
-                // A worker exit (normal or crash) terminates its own instance so the manager sees it die.
-                + "set +e\n"
-                + "\"$JAVA_BIN\" -jar " + WORKER_JAR_PATH + " > /home/ec2-user/worker.log 2>&1\n"
-                + "STATUS=$?\n"
-                + "cat /home/ec2-user/worker.log > /dev/console || true\n"
-                + "TOKEN=$(curl -s -X PUT \"http://169.254.169.254/latest/api/token\" "
-                + "-H \"X-aws-ec2-metadata-token-ttl-seconds: 21600\")\n"
-                + "INSTANCE_ID=$(curl -s -H \"X-aws-ec2-metadata-token: $TOKEN\" "
-                + "http://169.254.169.254/latest/meta-data/instance-id)\n"
-                + "aws ec2 terminate-instances --region " + AWS.region2.id()
-                + " --instance-ids \"$INSTANCE_ID\" || true\n"
-                + "exit $STATUS\n";
+        return workers.launchScript(bucketName);
     }
+
 
     private int totalOutstanding() {
         int total = 0;
@@ -513,6 +491,7 @@ public class Manager implements Runnable {
         }
     }
 
+
     protected void writeSummary(ClientTask task, String summaryLocation) throws IOException {
         objectStore.writeSummary(task.urls, task.texts, summaryLocation);
     }
@@ -521,23 +500,8 @@ public class Manager implements Runnable {
         return objectStore.readUrls(inputFileLocation);
     }
 
-    // Terminates only the workers this manager launched; never calls AWS in dev mode.
     private void stopWorkers() {
-        if (Queues.isDev()) {
-            return;
-        }
-        List<String> ids = new ArrayList<String>(workerInstanceIds);
-        if (ids.isEmpty()) {
-            return;
-        }
-        try {
-            terminateInstances(ids);
-        } catch (Exception e) {
-            // Worker shutdown is best effort and must not prevent the terminate acknowledgement.
-            System.err.println("[MANAGER] could not stop workers: " + e.getMessage());
-        } finally {
-            workerInstanceIds.clear();
-        }
+        workers.stop();
     }
 
     // Requests termination through AWS; protected so termination can be tested offline.
@@ -550,35 +514,8 @@ public class Manager implements Runnable {
         return AWS.getInstance().instanceStates(instanceIds);
     }
 
-    // Drops workers that are gone or stopped and launches replacements for outstanding work.
-    // Runs at most every WORKER_RECONCILE_INTERVAL_MILLIS; never while terminating.
     protected void reconcileWorkers() {
-        if (terminating.get() || Queues.isDev()) {
-            return;
-        }
-        try {
-            if (!workerInstanceIds.isEmpty()) {
-                Map<String, String> states = workerStates(workerInstanceIds);
-                for (String id : new ArrayList<String>(workerInstanceIds)) {
-                    String state = states.get(id);
-                    if (state == null || isDeadWorkerState(state)) {
-                        workerInstanceIds.remove(id);
-                        logDebug("removed dead worker " + id + " (state " + state + ")");
-                    }
-                }
-            }
-            ensureWorkers(totalOutstanding());
-        } catch (Exception e) {
-            // Replacement is best effort: a failed EC2 lookup must not stop the manager.
-            System.err.println("[MANAGER] could not reconcile workers: " + e.getMessage());
-        }
-    }
-
-    // EC2 states in which a worker can no longer process messages. A worker in "shutting-down"
-    // may be a cap kill, not a crash, and still counts as live until EC2 removes it.
-    private static boolean isDeadWorkerState(String state) {
-        return state.equals("terminated")
-                || state.equals("stopped");
+        workers.reconcile();
     }
 
     // Reconciles at most once per WORKER_RECONCILE_INTERVAL_MILLIS.
@@ -593,7 +530,7 @@ public class Manager implements Runnable {
 
     // Test seam: the IDs of the workers this manager launched.
     protected Set<String> getWorkerInstanceIds() {
-        return workerInstanceIds;
+        return workers.ids();
     }
 
     // Deletes the per-manager done-OCR queue in AWS mode; a no-op in dev.
