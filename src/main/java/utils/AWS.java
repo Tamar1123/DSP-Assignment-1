@@ -70,7 +70,7 @@ public class AWS {
         private static final AWS INSTANCE = new AWS();
     }
 
-    public String bucketName = "dsp1-only-together2-654654248213";
+    public String bucketName = "dsp1-only-together2-262171960391";
     public static final String S3_PREFIX = "assignment1/";
 
 
