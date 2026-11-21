@@ -143,7 +143,8 @@ public class Manager implements Runnable {
     // One router tick: drains done-OCR without waiting, then polls requests. A full manager
     // requeues the request on manager_queue; duplicates are ignored. No S3 or EC2 call here.
     public void routerTick() {
-        List<Received> results = doneOcrQueue.receive(RECEIVE_MAX, 0);
+        int slots = clients.freeSlots();
+        List<Received> results = doneOcrQueue.receive(RECEIVE_MAX, slots > 0 ? 0 : RECEIVE_WAIT_SECONDS);
         if (!results.isEmpty()) {
             logDebug("received " + results.size() + " message(s) on " + Queues.doneOcrQueueName(managerID));
         }
@@ -153,7 +154,11 @@ public class Manager implements Runnable {
         if (!running) {
             return;
         }
-        List<Received> requests = managerQueue.receive(RECEIVE_MAX, RECEIVE_WAIT_SECONDS);
+        if (slots <= 0) {
+            return; // do not receive a request we cannot admit
+        }
+        List<Received> requests = managerQueue.receive(
+                Math.min(RECEIVE_MAX, slots), RECEIVE_WAIT_SECONDS);
         if (!requests.isEmpty()) {
             logDebug("received " + requests.size() + " message(s) on " + Queues.managerQueueName());
         }

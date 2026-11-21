@@ -497,74 +497,71 @@ public class ManagerTest {
     }
 
     @Test
-    public void admitsUpToMaxClientsAndRequeuesTheNextOne() throws Exception {
+    public void admitsUpToMaxClientsAndLeavesTheRestQueued() throws Exception {
         String in = inputFile("http://a");
         Manager m = new Manager("mgr-7", 2, 5);
         for (String app : new String[] {"app-7a", "app-7b", "app-7c"}) {
             Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, app));
         }
-        // All three arrive in one batch: the gate was open when the batch was received.
         m.startOnce();
         assertEquals(2, m.getActiveClients());
         assertFalse(m.hasCapacity());
         assertEquals(2, Queues.get(Queues.workerQueueName()).receive(10, 1).size());
 
-        // The full manager gives the request back to the shared queue: no client reply.
         assertTrue(Queues.get(Queues.clientQueueName("app-7c")).receive(1, 1).isEmpty(),
                 "a full manager must not answer the client");
-        List<Received> requeued = Queues.get(Queues.managerQueueName()).receive(10, 1);
-        assertEquals(1, requeued.size());
-        assertEquals(Message.MessageType.NEW_TASK, requeued.get(0).getMessage().getType());
-        assertEquals("app-7c", requeued.get(0).getMessage().getLocalAppID());
-        assertEquals(1, m.getRejectedClients());
+        List<Received> remaining = Queues.get(Queues.managerQueueName()).receive(10, 1);
+        assertEquals(1, remaining.size());
+        assertEquals(Message.MessageType.NEW_TASK, remaining.get(0).getMessage().getType());
+        assertEquals("app-7c", remaining.get(0).getMessage().getLocalAppID());
+        assertEquals(0, m.getRejectedClients());
         assertEquals(0, m.getServedClients());
     }
 
     @Test
-    public void fullManagerRequeuesNewTaskAndSendsNoClientReply() throws Exception {
+    public void fullManagerDoesNotReceiveNewTask() throws Exception {
         String in = inputFile("http://a");
         Manager m = new Manager("mgr-8", 1, 5);
         Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-8a"));
         m.startOnce();
+        assertEquals(1, m.getActiveClients());
         assertFalse(m.hasCapacity());
 
-        // A request without a free slot is released back to manager_queue (for any manager to
-        // admit later), not deleted and not answered with an error.
         Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-8b"));
         m.startOnce();
+        assertEquals(1, m.getActiveClients());
+        assertEquals(0, m.getRejectedClients());
         assertTrue(Queues.get(Queues.clientQueueName("app-8b")).receive(1, 1).isEmpty(),
                 "a full manager must not answer the client");
-        List<Received> requeued = Queues.get(Queues.managerQueueName()).receive(10, 1);
-        assertEquals(1, requeued.size());
-        assertEquals("app-8b", requeued.get(0).getMessage().getLocalAppID());
-        assertEquals(Message.MessageType.NEW_TASK, requeued.get(0).getMessage().getType());
-        assertEquals(1, m.getRejectedClients());
-        assertEquals(1, m.getActiveClients(), "the requeue must not disturb the admitted client");
+        List<Received> stillQueued = Queues.get(Queues.managerQueueName()).receive(10, 1);
+        assertEquals(1, stillQueued.size());
+        assertEquals("app-8b", stillQueued.get(0).getMessage().getLocalAppID());
     }
 
     @Test
-    public void failedRequeueLeavesTheRequestUndeletedAndUnanswered() throws Exception {
-        // A requeue that throws must not reach handle()'s catch, which deletes the message:
-        // deleting it would lose the client request and the client would wait forever.
+    public void fullManagerStillDrainsDoneOcr() throws Exception {
         String in = inputFile("http://a");
-        ReleaseFailingQueue managerQueue = new ReleaseFailingQueue();
-        Queues.register(Queues.managerQueueName(), managerQueue);
-        Manager m = new Manager("mgr-14", 1, 5);
-
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-14a"));
-        m.startOnce(); // admits app-14a and fills the only slot
+        Manager m = new Manager("mgr-done-full", 1, 5);
+        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-full-ocr"));
+        m.startOnce();
         assertFalse(m.hasCapacity());
-        managerQueue.deleted.clear(); // that admission legitimately deleted its request
 
-        Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-14b"));
-        m.startOnce(); // full -> release throws -> no delete
+        List<Received> workerJobs = Queues.get(Queues.workerQueueName()).receive(10, 1);
+        assertEquals(1, workerJobs.size());
+        Message job = workerJobs.get(0).getMessage();
 
-        assertTrue(managerQueue.deleted.isEmpty(), "a failed release must not delete the request");
-        assertTrue(Queues.get(Queues.clientQueueName("app-14b")).receive(1, 0).isEmpty(),
-                "the requeued client must not get a reply");
-        assertEquals(1, m.getRejectedClients());
-        assertEquals(1, m.getActiveClients());
+        Message done = Message.createDoneOCR(job.getImageURL(), "ocr text", job.getLocalAppID());
+        Queues.get(Queues.doneOcrQueueName("mgr-done-full")).send(done);
+
+        m.startOnce();
+        assertEquals(0, m.getActiveClients());
+        assertTrue(m.hasCapacity());
+        List<Received> replies = Queues.get(Queues.clientQueueName("app-full-ocr")).receive(1, 1);
+        assertEquals(1, replies.size());
+        assertEquals(Message.MessageType.DONE_TASK, replies.get(0).getMessage().getType());
     }
+
+
 
     @Test
     public void finishFreesTheSlotForTheNextClient() throws Exception {
@@ -616,7 +613,7 @@ public class ManagerTest {
     @Test
     public void duplicateNewTaskIsOneEntryAndNotRequeued() throws Exception {
         String in = inputFile("http://a", "http://b");
-        Manager m = new Manager("mgr-11", 1, 5);
+        Manager m = new Manager("mgr-11", 2, 5);
         Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-11"));
         Queues.get(Queues.managerQueueName()).send(Message.createNewTask(in, "app-11"));
         m.startOnce();
@@ -701,26 +698,6 @@ public class ManagerTest {
         }
     }
 
-    // Manager queue whose requeue always fails, recording the deletes it is asked to do.
-    private static class ReleaseFailingQueue extends InMemoryQueue {
-        final List<Received> deleted = Collections.synchronizedList(new ArrayList<Received>());
-
-        @Override
-        public void delete(Received received) {
-            deleted.add(received);
-            super.delete(received);
-        }
-
-        @Override
-        public void release(Received received) {
-            throw new IllegalStateException("release failed");
-        }
-
-        @Override
-        public void release(Received received, int delaySeconds) {
-            throw new IllegalStateException("release failed");
-        }
-    }
 
     // Worker queue that records every send so tests can check job ordering.
     private static class RecordingQueue extends InMemoryQueue {
