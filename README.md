@@ -2,8 +2,7 @@
 
 A distributed, asynchronous image-to-text (OCR) processing system built with Java, Maven, Amazon S3, Amazon SQS, Amazon EC2, and Tess4J (Tesseract OCR).
 
-## Submission metadata (fill before submitting)
-- **Written by:** Nir Bergman (322974635) and Tamar Shefi Simchon (212550966)
+## Submission metadata 
 - **Instances:** manager and workers both use AMI `ami-0e72706534bb166e3` (Ubuntu 22.04, `us-east-1`), type **m4.large**, `LabInstanceProfile`, key pair `vockey`.
 - **Run time:** ~3 min 50 s on the 3-URL sample (see *Running the Application*); re-measure and update before submitting.
 - **`n` used for the sample run:** `manager-clients-n=1`, `worker-files-n=100`
